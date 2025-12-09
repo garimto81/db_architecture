@@ -1,6 +1,6 @@
-# Low-Level Design (LLD) - GGP Poker Video Catalog DB
+# LLD: GGP Poker Video Catalog DB
 
-> **버전**: 1.0.0 | **기준 PRD**: v5.1 | **작성일**: 2025-12-09
+> **버전**: 1.1.0 | **기준 PRD**: v5.1 | **작성일**: 2025-12-09 | **수정일**: 2025-12-09
 
 ---
 
@@ -77,7 +77,9 @@ Project ─1:N─▶ Season ─1:N─▶ Event ─1:N─▶ Episode ─1:N─▶
 | Project Code | 7 | WSOP, HCL, GGMILLIONS, MPP, PAD, GOG, OTHER |
 | Sub-Category | 6 | ARCHIVE, BRACELET_LV, BRACELET_EU, BRACELET_PARA, CIRCUIT, SUPER_CIRCUIT |
 | Version Type | 9 | clean, mastered, stream, subclip, final_edit, nobug, pgm, generic, hires |
-| Tag Category | 6 | poker_play, emotion, epic_hand, runout, adjective, hand_grade |
+| Tag Category | 5 | poker_play, emotion, epic_hand, runout, adjective |
+
+> **참고**: `hand_grade`는 `hand_clips.hand_grade` 컬럼에 직접 저장 (★, ★★, ★★★)
 
 ---
 
@@ -257,6 +259,14 @@ Google Sheets                Sync Worker                     PostgreSQL
 
 ---
 
-**문서 버전**: 1.0.0
+**문서 버전**: 1.1.0
 **작성일**: 2025-12-09
-**상태**: Initial Release
+**수정일**: 2025-12-09
+**상태**: Updated - Style/Documentation fixes
+
+### 변경 이력
+
+| 버전 | 날짜 | 변경 내용 |
+|------|------|----------|
+| 1.1.0 | 2025-12-09 | #14 제목 형식 일관성, #15 Tag Category 개수 수정 (6→5) |
+| 1.0.0 | 2025-12-09 | 초기 버전 |

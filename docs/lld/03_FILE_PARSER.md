@@ -1,6 +1,6 @@
 # LLD 03: File Parser Design
 
-> **버전**: 1.0.0 | **기준 PRD**: v5.1 | **작성일**: 2025-12-09
+> **버전**: 1.1.0 | **기준 PRD**: v5.1 | **작성일**: 2025-12-09 | **수정일**: 2025-12-09
 
 ---
 
@@ -88,24 +88,54 @@ class WSOPCircuitParser(BaseParser):
 
 **패턴**: `{YYMMDD}_Super High Roller...with {플레이어}.mp4`
 
+> **⚠️ 주의**: 파일명에 공백, 특수문자가 포함될 수 있음. 유연한 패턴 필요.
+
 ```python
 class GGMillionsParser(BaseParser):
-    PATTERN = re.compile(
-        r'^(\d{6})_Super High Roller Poker FINAL TABLE with (.+)\.(mp4|mov)$'
-    )
+    """
+    GGMillions 파일명 파서
+
+    지원 패턴:
+    - 250507_Super High Roller Poker FINAL TABLE with Joey Ingram.mp4
+    - 250507_Super High Roller with Phil Ivey.mp4 (축약형)
+    - 250507_GGMillions_FT_Joey_Ingram.mp4 (대안 형식)
+    """
+
+    PATTERNS = [
+        # 정규 형식: 날짜_Super High Roller Poker FINAL TABLE with 플레이어.ext
+        re.compile(
+            r'^(\d{6})_Super High Roller Poker FINAL TABLE with (.+)\.(mp4|mov|mxf)$',
+            re.IGNORECASE
+        ),
+        # 축약 형식: 날짜_Super High Roller with 플레이어.ext
+        re.compile(
+            r'^(\d{6})_Super High Roller with (.+)\.(mp4|mov|mxf)$',
+            re.IGNORECASE
+        ),
+        # 대안 형식: 날짜_GGMillions_FT_플레이어.ext
+        re.compile(
+            r'^(\d{6})_GGMillions_FT_(.+)\.(mp4|mov|mxf)$',
+            re.IGNORECASE
+        ),
+    ]
 
     def parse(self, filename: str) -> ParsedFile:
-        match = self.PATTERN.match(filename)
-        if not match:
-            return None
+        for pattern in self.PATTERNS:
+            match = pattern.match(filename)
+            if match:
+                return self._extract(match)
+        return None
 
+    def _extract(self, match) -> ParsedFile:
         date_str = match.group(1)
+        featured_player = match.group(2).replace('_', ' ').strip()
+
         return ParsedFile(
             date=datetime.strptime(date_str, '%y%m%d'),
             event_type='super_high_roller',
             table_type='final_table',
-            featured_player=match.group(2),
-            extension=match.group(3)
+            featured_player=featured_player,
+            extension=match.group(3).lower()
         )
 ```
 
@@ -115,22 +145,67 @@ class GGMillionsParser(BaseParser):
 
 **패턴**: `E{번호}_GOG_final_edit_{클린본?}_{날짜}.mp4`
 
+> **⚠️ 주의**: 에피소드 번호 자릿수, 한글 버전명 처리
+
 ```python
 class GOGParser(BaseParser):
-    PATTERN = re.compile(
-        r'^E(\d{2})_GOG_final_edit_(클린본_)?(\d{8})\.(mp4|mov)$'
-    )
+    """
+    GOG 시리즈 파일명 파서
+
+    지원 패턴:
+    - E01_GOG_final_edit_20231215.mp4
+    - E01_GOG_final_edit_클린본_20231215.mp4
+    - E1_GOG_final_20231215.mp4 (자릿수 유연)
+    - GOG_EP01_clean_20231215.mp4 (대안 형식)
+    """
+
+    PATTERNS = [
+        # 정규 형식: E번호_GOG_final_edit_[클린본_]날짜.ext
+        re.compile(
+            r'^E(\d{1,3})_GOG_final_edit_(클린본_)?(\d{8})\.(mp4|mov|mxf)$',
+            re.IGNORECASE
+        ),
+        # 축약 형식: E번호_GOG_final_날짜.ext
+        re.compile(
+            r'^E(\d{1,3})_GOG_final_(\d{8})\.(mp4|mov|mxf)$',
+            re.IGNORECASE
+        ),
+        # 대안 형식: GOG_EP번호_[버전]_날짜.ext
+        re.compile(
+            r'^GOG_EP(\d{1,3})_(clean|final)?_?(\d{8})\.(mp4|mov|mxf)$',
+            re.IGNORECASE
+        ),
+    ]
 
     def parse(self, filename: str) -> ParsedFile:
-        match = self.PATTERN.match(filename)
-        if not match:
-            return None
+        for idx, pattern in enumerate(self.PATTERNS):
+            match = pattern.match(filename)
+            if match:
+                return self._extract(match, idx)
+        return None
+
+    def _extract(self, match, pattern_idx: int) -> ParsedFile:
+        episode_number = int(match.group(1))
+
+        # 버전 타입 결정
+        if pattern_idx == 0:  # 정규 형식
+            version_type = 'clean' if match.group(2) else 'final_edit'
+            date_str = match.group(3)
+            ext = match.group(4)
+        elif pattern_idx == 1:  # 축약 형식
+            version_type = 'final_edit'
+            date_str = match.group(2)
+            ext = match.group(3)
+        else:  # 대안 형식
+            version_type = match.group(2).lower() if match.group(2) else 'final_edit'
+            date_str = match.group(3)
+            ext = match.group(4)
 
         return ParsedFile(
-            episode_number=int(match.group(1)),
-            version_type='clean' if match.group(2) else 'final_edit',
-            date=datetime.strptime(match.group(3), '%Y%m%d'),
-            extension=match.group(4)
+            episode_number=episode_number,
+            version_type=version_type,
+            date=datetime.strptime(date_str, '%Y%m%d'),
+            extension=ext.lower()
         )
 ```
 
@@ -140,20 +215,60 @@ class GOGParser(BaseParser):
 
 **패턴**: `PAD S{시즌} E{에피소드}.mp4`
 
+> **⚠️ 주의**: 구분자 유연성 (공백, 언더스코어, 하이픈)
+
 ```python
 class PADParser(BaseParser):
-    PATTERN = re.compile(r'^PAD S(\d+) E(\d+)\.(mp4|mov)$')
+    """
+    Poker After Dark 파일명 파서
+
+    지원 패턴:
+    - PAD S12 E01.mp4
+    - PAD_S12_E01.mp4
+    - PAD-S12-E01.mp4
+    - Poker_After_Dark_S12_E01.mp4
+    """
+
+    PATTERNS = [
+        # 정규 형식: PAD S시즌 E에피소드.ext (공백 구분)
+        re.compile(
+            r'^PAD[\s_-]+S(\d+)[\s_-]+E(\d+)\.(mp4|mov|mxf)$',
+            re.IGNORECASE
+        ),
+        # 전체 이름: Poker After Dark S시즌 E에피소드.ext
+        re.compile(
+            r'^Poker[\s_]+After[\s_]+Dark[\s_]+S(\d+)[\s_]+E(\d+)\.(mp4|mov|mxf)$',
+            re.IGNORECASE
+        ),
+        # 축약형: PAD_시즌에피소드.ext (예: PAD_1201.mp4)
+        re.compile(
+            r'^PAD[\s_-]+(\d{2})(\d{2})\.(mp4|mov|mxf)$',
+            re.IGNORECASE
+        ),
+    ]
 
     def parse(self, filename: str) -> ParsedFile:
-        match = self.PATTERN.match(filename)
-        if not match:
-            return None
+        for idx, pattern in enumerate(self.PATTERNS):
+            match = pattern.match(filename)
+            if match:
+                return self._extract(match, idx)
+        return None
+
+    def _extract(self, match, pattern_idx: int) -> ParsedFile:
+        if pattern_idx <= 1:  # 정규/전체 형식
+            season = int(match.group(1))
+            episode = int(match.group(2))
+            ext = match.group(3)
+        else:  # 축약형
+            season = int(match.group(1))
+            episode = int(match.group(2))
+            ext = match.group(3)
 
         return ParsedFile(
-            season_number=int(match.group(1)),
-            episode_number=int(match.group(2)),
+            season_number=season,
+            episode_number=episode,
             event_type='tv_series',
-            extension=match.group(3)
+            extension=ext.lower()
         )
 ```
 
@@ -305,5 +420,14 @@ def test_parsers(filename, expected):
 
 ---
 
-**문서 버전**: 1.0.0
+**문서 버전**: 1.1.0
 **작성일**: 2025-12-09
+**수정일**: 2025-12-09
+**상태**: Updated - Regex patterns improved
+
+### 변경 이력
+
+| 버전 | 날짜 | 변경 내용 |
+|------|------|----------|
+| 1.1.0 | 2025-12-09 | #9 GGMillions/PAD/GOG 파서 정규식 개선 - 다중 패턴 지원, IGNORECASE, 유연한 구분자 |
+| 1.0.0 | 2025-12-09 | 초기 버전 |
