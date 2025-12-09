@@ -1,6 +1,6 @@
 # LLD 01: Database Schema Design
 
-> **버전**: 1.0.0 | **기준 PRD**: v5.1 | **작성일**: 2025-12-09
+> **버전**: 1.1.0 | **기준 PRD**: v5.1 | **작성일**: 2025-12-09 | **수정일**: 2025-12-09
 
 ---
 
@@ -353,6 +353,7 @@ CREATE TABLE hand_clips (
     hand_grade VARCHAR(10),
     sheet_row_number INTEGER,
     sheet_source VARCHAR(50),
+    conflict_status VARCHAR(20) DEFAULT NULL,  -- 충돌 상태 관리
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP WITH TIME ZONE,
@@ -365,6 +366,9 @@ CREATE TABLE hand_clips (
     ),
     CONSTRAINT chk_sheet_source CHECK (
         sheet_source IS NULL OR sheet_source IN ('hand_analysis', 'hand_database')
+    ),
+    CONSTRAINT chk_conflict_status CHECK (
+        conflict_status IS NULL OR conflict_status IN ('detected', 'resolved', 'manual_review')
     )
 );
 
@@ -373,10 +377,12 @@ CREATE INDEX idx_hand_clips_video ON hand_clips(video_file_id);
 CREATE INDEX idx_hand_clips_grade ON hand_clips(hand_grade);
 CREATE INDEX idx_hand_clips_timecode ON hand_clips(video_file_id, start_seconds);
 CREATE INDEX idx_hand_clips_sheet_row ON hand_clips(sheet_source, sheet_row_number);
+CREATE INDEX idx_hand_clips_conflict ON hand_clips(conflict_status) WHERE conflict_status IS NOT NULL;
 
 COMMENT ON TABLE hand_clips IS '핸드 클립 (타임코드 기반 세그먼트)';
 COMMENT ON COLUMN hand_clips.hand_grade IS '핸드 등급: ★, ★★, ★★★';
 COMMENT ON COLUMN hand_clips.sheet_row_number IS '원본 Google Sheet 행 번호 (동기화용)';
+COMMENT ON COLUMN hand_clips.conflict_status IS '동기화 충돌 상태: detected, resolved, manual_review';
 ```
 
 #### 2.2.9 hand_clip_tags
@@ -463,13 +469,18 @@ CREATE TABLE bracelets (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT chk_bracelet_number CHECK (bracelet_number > 0),
-    CONSTRAINT uq_bracelet_event UNIQUE (event_id)
+    -- 동일 이벤트에서 한 명만 우승 가능 (event당 1개 브레이슬릿)
+    CONSTRAINT uq_bracelet_event UNIQUE (event_id),
+    -- 동일 선수가 같은 이벤트에서 중복 기록 방지
+    CONSTRAINT uq_bracelet_player_event UNIQUE (player_id, event_id)
 );
 
 CREATE INDEX idx_bracelets_player ON bracelets(player_id);
 CREATE INDEX idx_bracelets_event ON bracelets(event_id);
+CREATE INDEX idx_bracelets_win_date ON bracelets(win_date);
 
 COMMENT ON TABLE bracelets IS 'WSOP 브레이슬릿 기록';
+COMMENT ON COLUMN bracelets.bracelet_number IS '해당 선수의 n번째 브레이슬릿';
 ```
 
 ### 2.3 Sync Tables
@@ -893,45 +904,87 @@ ORDER BY
 
 ### 6.1 핸드 클립 상세 뷰
 
+> **⚠️ 성능 주의**: N+1 쿼리 문제 방지를 위해 Materialized View 또는 서브쿼리 최적화 권장
+
 ```sql
+-- 방법 1: 서브쿼리를 활용한 최적화된 뷰
 CREATE OR REPLACE VIEW v_hand_clip_details AS
+WITH tag_agg AS (
+    SELECT
+        hct.hand_clip_id,
+        array_agg(DISTINCT t.name_display) FILTER (WHERE t.category = 'poker_play') AS poker_play_tags,
+        array_agg(DISTINCT t.name_display) FILTER (WHERE t.category = 'emotion') AS emotion_tags,
+        array_agg(DISTINCT t.name_display) FILTER (WHERE t.category = 'epic_hand') AS epic_hand_tags,
+        array_agg(DISTINCT t.name_display) FILTER (WHERE t.category = 'runout') AS runout_tags,
+        array_agg(DISTINCT t.name_display) FILTER (WHERE t.category = 'adjective') AS adjective_tags
+    FROM hand_clip_tags hct
+    JOIN tags t ON hct.tag_id = t.id
+    GROUP BY hct.hand_clip_id
+),
+player_agg AS (
+    SELECT
+        hcp.hand_clip_id,
+        array_agg(DISTINCT pl.name ORDER BY hcp.player_order) AS players,
+        array_agg(DISTINCT pl.name) FILTER (WHERE hcp.role = 'winner') AS winners
+    FROM hand_clip_players hcp
+    JOIN players pl ON hcp.player_id = pl.id
+    GROUP BY hcp.hand_clip_id
+)
 SELECT
     hc.id,
     hc.title,
     hc.timecode_in,
     hc.timecode_out,
+    hc.start_seconds,
+    hc.end_seconds,
     hc.hand_grade,
     hc.winner_hand,
     hc.hands_involved,
     hc.description,
+    hc.conflict_status,
     vf.file_path,
     vf.file_name,
+    vf.duration_seconds AS video_duration,
     e.title AS episode_title,
+    e.day_number,
+    e.table_type,
     ev.name AS event_name,
     ev.event_type,
     ev.game_type,
+    ev.buy_in,
     s.year,
     s.location,
     p.name AS project_name,
     p.code AS project_code,
-    array_agg(DISTINCT t.name_display) FILTER (WHERE t.category = 'poker_play') AS poker_play_tags,
-    array_agg(DISTINCT t.name_display) FILTER (WHERE t.category = 'emotion') AS emotion_tags,
-    array_agg(DISTINCT pl.name) AS players
+    COALESCE(ta.poker_play_tags, '{}') AS poker_play_tags,
+    COALESCE(ta.emotion_tags, '{}') AS emotion_tags,
+    COALESCE(ta.epic_hand_tags, '{}') AS epic_hand_tags,
+    COALESCE(ta.runout_tags, '{}') AS runout_tags,
+    COALESCE(ta.adjective_tags, '{}') AS adjective_tags,
+    COALESCE(pa.players, '{}') AS players,
+    COALESCE(pa.winners, '{}') AS winners
 FROM hand_clips hc
 LEFT JOIN video_files vf ON hc.video_file_id = vf.id
 LEFT JOIN episodes e ON hc.episode_id = e.id
 LEFT JOIN events ev ON e.event_id = ev.id
 LEFT JOIN seasons s ON ev.season_id = s.id
 LEFT JOIN projects p ON s.project_id = p.id
-LEFT JOIN hand_clip_tags hct ON hc.id = hct.hand_clip_id
-LEFT JOIN tags t ON hct.tag_id = t.id
-LEFT JOIN hand_clip_players hcp ON hc.id = hcp.hand_clip_id
-LEFT JOIN players pl ON hcp.player_id = pl.id
-WHERE hc.deleted_at IS NULL
-GROUP BY
-    hc.id, vf.id, e.id, ev.id, s.id, p.id;
+LEFT JOIN tag_agg ta ON hc.id = ta.hand_clip_id
+LEFT JOIN player_agg pa ON hc.id = pa.hand_clip_id
+WHERE hc.deleted_at IS NULL;
 
-COMMENT ON VIEW v_hand_clip_details IS '핸드 클립 상세 정보 (조인된 뷰)';
+COMMENT ON VIEW v_hand_clip_details IS '핸드 클립 상세 정보 (CTE 최적화 뷰)';
+
+-- 방법 2: Materialized View (대용량 데이터 권장)
+CREATE MATERIALIZED VIEW mv_hand_clip_details AS
+SELECT * FROM v_hand_clip_details;
+
+CREATE UNIQUE INDEX idx_mv_hand_clip_id ON mv_hand_clip_details(id);
+CREATE INDEX idx_mv_hand_clip_grade ON mv_hand_clip_details(hand_grade);
+CREATE INDEX idx_mv_hand_clip_project ON mv_hand_clip_details(project_code);
+
+-- Materialized View 갱신 (동기화 후 실행)
+-- REFRESH MATERIALIZED VIEW CONCURRENTLY mv_hand_clip_details;
 ```
 
 ### 6.2 동기화 상태 뷰
@@ -1006,6 +1059,14 @@ INSERT INTO schema_versions (version, description) VALUES
 
 ---
 
-**문서 버전**: 1.0.0
+**문서 버전**: 1.1.0
 **작성일**: 2025-12-09
-**상태**: Initial Release
+**수정일**: 2025-12-09
+**상태**: Updated - Logic/Performance issues fixed
+
+### 변경 이력
+
+| 버전 | 날짜 | 변경 내용 |
+|------|------|----------|
+| 1.1.0 | 2025-12-09 | #7 bracelets UNIQUE 제약조건 추가, #8 conflict_status 컬럼 추가, #11 N+1 쿼리 최적화 (CTE + Materialized View) |
+| 1.0.0 | 2025-12-09 | 초기 버전 |
