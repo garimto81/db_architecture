@@ -16,7 +16,8 @@ docs/lld/
 ├── 01_DATABASE_SCHEMA.md  # 데이터베이스 스키마 상세 설계
 ├── 02_SYNC_SYSTEM.md      # 동기화 시스템 상세 설계
 ├── 03_FILE_PARSER.md      # 파일명 파서 상세 설계
-└── 04_DOCKER_DEPLOYMENT.md # Docker 배포 상세 설계
+├── 04_DOCKER_DEPLOYMENT.md # Docker 배포 상세 설계
+└── 05_AGENT_DESIGN.md     # 에이전트 시스템 상세 설계 ⭐ NEW
 ```
 
 ### 1.2 시스템 아키텍처 개요
@@ -246,6 +247,7 @@ Google Sheets                Sync Worker                     PostgreSQL
 | [02_SYNC_SYSTEM.md](./02_SYNC_SYSTEM.md) | 동기화 시스템 | 스케줄러, 증분 로직, 충돌 해결 |
 | [03_FILE_PARSER.md](./03_FILE_PARSER.md) | 파일명 파서 | 7개 프로젝트 파서, 정규식, 테스트 케이스 |
 | [04_DOCKER_DEPLOYMENT.md](./04_DOCKER_DEPLOYMENT.md) | Docker 배포 | compose 설정, 볼륨, 운영 명령어 |
+| [05_AGENT_DESIGN.md](./05_AGENT_DESIGN.md) | 에이전트 시스템 | BaseAgent, Orchestrator, 6개 블럭 에이전트 |
 
 ---
 
@@ -268,5 +270,6 @@ Google Sheets                Sync Worker                     PostgreSQL
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|----------|
+| 1.2.0 | 2025-12-09 | 05_AGENT_DESIGN.md 추가 - 에이전트 시스템 상세 설계 |
 | 1.1.0 | 2025-12-09 | #14 제목 형식 일관성, #15 Tag Category 개수 수정 (6→5) |
 | 1.0.0 | 2025-12-09 | 초기 버전 |
