@@ -1,0 +1,16 @@
+# Frontend Dockerfile - Development with hot reload
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install dependencies
+COPY package*.json ./
+RUN npm ci --silent
+
+# Copy source (will be overwritten by volume mount for hot reload)
+COPY . .
+
+EXPOSE 5173
+
+# Vite dev server with host binding for Docker
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

@@ -1,0 +1,48 @@
+# BLOCK_FRONTEND Block Rules
+# Version: 1.0.0
+# Agent: FrontendAgent
+
+block_id: BLOCK_FRONTEND
+agent: FrontendAgent
+language: typescript
+
+scope:
+  allowed_paths:
+    - "frontend/**"
+    - "frontend/src/**/*.tsx"
+    - "frontend/src/**/*.ts"
+    - "frontend/src/**/*.css"
+  forbidden_paths:
+    - "backend/**"
+    - "blocks/**"
+    - "src/agents/**"
+    - "*.py"
+    - "*.sql"
+    - "docker/**"
+
+limits:
+  max_files: 40
+  max_tokens: 45000
+
+dependencies:
+  - BLOCK_SYNC  # 동기화 이벤트 구독 (WebSocket 통해)
+
+communication:
+  allowed:
+    - protocol: http
+      target: "backend/api/*"
+    - protocol: websocket
+      target: "backend/ws/*"
+  forbidden:
+    - protocol: direct
+      target: "database"
+    - protocol: import
+      target: "python_modules"
+
+capabilities:
+  - render_dashboard      # 대시보드 UI 렌더링
+  - handle_websocket      # WebSocket 이벤트 처리
+  - update_sync_status    # 동기화 상태 UI 업데이트
+  - show_notification     # 알림 토스트 표시
+  - fetch_stats           # REST API로 통계 조회
+  - trigger_sync          # 수동 동기화 트리거
