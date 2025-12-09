@@ -6,3 +6,9 @@
 export { apiClient, getWsUrl } from './api';
 export { fetchSyncStatus, fetchSyncHistory, triggerSync, fetchSyncJob } from './syncApi';
 export { fetchDashboardStats, fetchSystemHealth } from './dashboardApi';
+export {
+  getCatalogItems,
+  getCatalogStats,
+  getCatalogFilterOptions,
+  getCatalogItem,
+} from './catalogApi';

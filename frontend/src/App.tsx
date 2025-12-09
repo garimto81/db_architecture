@@ -7,7 +7,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Layout } from './components/layout';
 import { ErrorBoundary, ToastContainer } from './components/common';
-import { Dashboard, Sync, Logs } from './pages';
+import { Dashboard, Sync, Logs, Catalog } from './pages';
 
 // TanStack Query 클라이언트 설정
 const queryClient = new QueryClient({
@@ -28,6 +28,7 @@ function App() {
           <Layout>
             <Routes>
               <Route path="/" element={<Dashboard />} />
+              <Route path="/catalog" element={<Catalog />} />
               <Route path="/sync" element={<Sync />} />
               <Route path="/logs" element={<Logs />} />
             </Routes>
