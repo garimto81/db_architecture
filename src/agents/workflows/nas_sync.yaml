@@ -1,0 +1,89 @@
+# NAS 동기화 워크플로우
+# NAS에서 파일을 스캔하고 파싱하여 데이터베이스에 저장합니다.
+
+workflow_id: nas_sync
+name: NAS 동기화 워크플로우
+version: "1.0"
+description: |
+  NAS 파일 시스템을 스캔하고, 파일명을 파싱하여
+  메타데이터를 추출한 후 데이터베이스에 저장합니다.
+
+# 컨텍스트 격리 설정
+context_isolation:
+  enabled: true
+  max_tokens_per_step: 50000
+
+# 워크플로우 단계
+steps:
+  # 1단계: NAS 스캔
+  - id: scan_nas
+    block_id: BLOCK_SYNC
+    action: scan_nas
+    inputs:
+      path: "${params.nas_path}"
+      extensions: [".mp4", ".mkv", ".avi", ".mov"]
+    outputs:
+      - files
+      - total
+    on_failure: abort
+    timeout: 300
+    token_budget: 30000
+
+  # 2단계: 파일명 파싱 (배치)
+  - id: parse_files
+    block_id: BLOCK_PARSER
+    action: parse_batch
+    inputs:
+      filenames: "${scan_nas.files}"
+    outputs:
+      - results
+      - low_confidence_count
+    on_failure: continue
+    timeout: 120
+    token_budget: 50000
+
+  # 3단계: 데이터 검증
+  - id: validate_data
+    block_id: BLOCK_VALIDATION
+    action: validate_batch
+    inputs:
+      schema: video_files
+      records: "${parse_files.results}"
+    outputs:
+      - passed
+      - issues
+    on_failure: continue
+    timeout: 60
+    token_budget: 20000
+
+  # 4단계: 데이터베이스 저장
+  - id: save_records
+    block_id: BLOCK_STORAGE
+    action: bulk_upsert
+    inputs:
+      table: video_files
+      records: "${parse_files.results}"
+      conflict_columns: ["filename"]
+    outputs:
+      - affected_rows
+    on_failure: rollback
+    timeout: 120
+    token_budget: 10000
+    condition: "${validate_data.passed}"
+
+# 훅 설정
+hooks:
+  on_start:
+    - action: log
+      message: "NAS 동기화 시작: ${params.nas_path}"
+
+  on_complete:
+    - action: notify
+      channel: slack
+      message: "NAS 동기화 완료: ${save_records.affected_rows}건 저장"
+
+  on_error:
+    - action: notify
+      channel: slack
+      message: "NAS 동기화 실패"
+      severity: error

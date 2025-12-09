@@ -1,0 +1,84 @@
+# 카탈로그 내보내기 워크플로우
+# 데이터베이스 내용을 다양한 형식으로 내보냅니다.
+
+workflow_id: export_catalog
+name: 카탈로그 내보내기 워크플로우
+version: "1.0"
+description: |
+  비디오 카탈로그 데이터를 CSV, JSON 형식으로 내보내고
+  선택적으로 Google Sheets에 업로드합니다.
+
+context_isolation:
+  enabled: true
+  max_tokens_per_step: 20000
+
+steps:
+  # 1단계: 데이터 조회
+  - id: query_data
+    block_id: BLOCK_QUERY
+    action: search
+    inputs:
+      table: video_files
+      filters: "${params.filters}"
+      order_by:
+        - field: year
+          order: DESC
+        - field: project
+          order: ASC
+      page_size: 10000
+    outputs:
+      - items
+      - total
+    on_failure: abort
+    timeout: 60
+
+  # 2단계: CSV 내보내기
+  - id: export_csv
+    block_id: BLOCK_EXPORT
+    action: export_csv
+    inputs:
+      table: video_files
+      columns:
+        - filename
+        - project
+        - year
+        - event_name
+        - stage
+        - part
+        - path
+      output_path: "catalog_${params.date}.csv"
+    outputs:
+      - file_path
+      - records_exported
+    on_failure: continue
+    timeout: 120
+
+  # 3단계: JSON 내보내기
+  - id: export_json
+    block_id: BLOCK_EXPORT
+    action: export_json
+    inputs:
+      table: video_files
+      output_path: "catalog_${params.date}.json"
+      pretty: true
+    outputs:
+      - file_path
+    on_failure: continue
+    timeout: 120
+    parallel: true  # CSV와 병렬 실행 가능
+
+  # 4단계: Google Sheets 업로드 (선택)
+  - id: upload_sheets
+    block_id: BLOCK_EXPORT
+    action: export_sheets
+    inputs:
+      table: video_files
+      spreadsheet_id: "${params.spreadsheet_id}"
+      sheet_name: "Catalog_${params.date}"
+    on_failure: skip
+    condition: "${params.upload_to_sheets}"
+
+hooks:
+  on_complete:
+    - action: notify
+      message: "카탈로그 내보내기 완료: ${export_csv.records_exported}건"
