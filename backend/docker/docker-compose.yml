@@ -1,0 +1,100 @@
+# GGP Poker Video Catalog - Docker Compose Configuration
+# Usage: docker-compose up -d
+
+# Network for container communication
+networks:
+  pokervod-net:
+    driver: bridge
+
+services:
+  # ============== Database ==============
+  db:
+    image: postgres:15-alpine
+    container_name: pokervod-db
+    networks:
+      - pokervod-net
+    environment:
+      POSTGRES_DB: pokervod
+      POSTGRES_USER: pokervod
+      POSTGRES_PASSWORD: pokervod123
+      TZ: Asia/Seoul
+    ports:
+      - "127.0.0.1:5432:5432"  # Local only for security
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pokervod -d pokervod"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # ============== Backend API ==============
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: pokervod-api
+    networks:
+      - pokervod-net
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:9000:8000"  # Local only, accessed via frontend nginx (9000 to avoid conflict)
+    environment:
+      DATABASE_URL: postgresql://pokervod:pokervod123@db:5432/pokervod
+      DEBUG: "false"
+      CORS_ORIGINS: '["http://localhost:3000", "http://localhost:8080", "http://frontend:80"]'
+      APP_NAME: "GGP Poker Video Catalog API"
+      APP_VERSION: "1.0.0"
+    volumes:
+      - /z/GGPNAs/ARCHIVE:/nas/ARCHIVE:ro
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ============== Frontend Dashboard ==============
+  frontend:
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+    container_name: pokervod-frontend
+    networks:
+      - pokervod-net
+    depends_on:
+      - api
+    ports:
+      - "8080:80"  # Main entry point
+    environment:
+      VITE_API_BASE_URL: ""  # Proxied through nginx
+      VITE_WS_BASE_URL: ""
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+volumes:
+  postgres_data:
+    driver: local

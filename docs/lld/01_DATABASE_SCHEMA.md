@@ -1,6 +1,6 @@
 # LLD 01: Database Schema Design
 
-> **버전**: 1.1.0 | **기준 PRD**: v5.1 | **작성일**: 2025-12-09 | **수정일**: 2025-12-09
+> **버전**: 1.2.0 | **기준 PRD**: v5.1 | **작성일**: 2025-12-09 | **수정일**: 2025-12-09
 
 ---
 
@@ -246,6 +246,17 @@ CREATE TABLE video_files (
     checksum VARCHAR(64),
     file_mtime TIMESTAMP WITH TIME ZONE,
     scan_status VARCHAR(20) DEFAULT 'pending',
+
+    -- Display & Catalog 관련 컬럼 (v1.2.0 추가)
+    display_title VARCHAR(500),           -- 정제된 표시 제목
+    content_type VARCHAR(20),             -- 콘텐츠 유형
+    catalog_title VARCHAR(300),           -- 카탈로그 그룹명
+    episode_title VARCHAR(300),           -- 개별 에피소드 제목
+    ai_description TEXT,                  -- AI 추론 설명 (추후 구현)
+    is_catalog_item BOOLEAN DEFAULT false,-- 대표 파일 여부
+    is_hidden BOOLEAN DEFAULT false,      -- 숨김 여부
+    hidden_reason VARCHAR(200),           -- 숨김 사유
+
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP WITH TIME ZONE,
@@ -259,12 +270,18 @@ CREATE TABLE video_files (
             'nobug', 'pgm', 'generic', 'hires'
         )
     ),
+    CONSTRAINT chk_content_type CHECK (
+        content_type IS NULL OR content_type IN (
+            'full_episode', 'hand_clip', 'highlight', 'interview', 'recap'
+        )
+    ),
     CONSTRAINT chk_scan_status CHECK (
         scan_status IN ('pending', 'scanned', 'failed', 'deleted')
     ),
     CONSTRAINT chk_file_size CHECK (file_size_bytes IS NULL OR file_size_bytes >= 0)
 );
 
+-- 기본 인덱스
 CREATE INDEX idx_video_files_episode ON video_files(episode_id);
 CREATE INDEX idx_video_files_path ON video_files(file_path);
 CREATE INDEX idx_video_files_format ON video_files(file_format);
@@ -272,9 +289,24 @@ CREATE INDEX idx_video_files_version ON video_files(version_type);
 CREATE INDEX idx_video_files_mtime ON video_files(file_mtime);
 CREATE INDEX idx_video_files_scan_status ON video_files(scan_status);
 
+-- 카탈로그 관련 인덱스 (v1.2.0 추가)
+CREATE INDEX idx_video_files_content_type ON video_files(content_type);
+CREATE INDEX idx_video_files_catalog_title ON video_files(catalog_title);
+CREATE INDEX idx_video_files_is_catalog_item ON video_files(is_catalog_item) WHERE is_catalog_item = true;
+CREATE INDEX idx_video_files_is_hidden ON video_files(is_hidden) WHERE is_hidden = false;
+CREATE INDEX idx_video_files_display_title ON video_files(display_title);
+
 COMMENT ON TABLE video_files IS '비디오 파일 메타데이터';
 COMMENT ON COLUMN video_files.version_type IS 'clean, mastered, stream, subclip, final_edit, nobug, pgm, generic, hires';
 COMMENT ON COLUMN video_files.file_mtime IS 'NAS 파일 수정시간 (증분 스캔용)';
+COMMENT ON COLUMN video_files.display_title IS '정제된 파일 제목 (파일명에서 추출)';
+COMMENT ON COLUMN video_files.content_type IS '콘텐츠 유형: full_episode, hand_clip, highlight, interview, recap';
+COMMENT ON COLUMN video_files.catalog_title IS '카탈로그 그룹명 (Netflix 스타일 분류)';
+COMMENT ON COLUMN video_files.episode_title IS '개별 에피소드/클립 제목';
+COMMENT ON COLUMN video_files.ai_description IS 'AI 추론 설명 (추후 구현 예정)';
+COMMENT ON COLUMN video_files.is_catalog_item IS '대표 파일 여부 (동일 콘텐츠 중 버전 우선순위로 선택)';
+COMMENT ON COLUMN video_files.is_hidden IS '숨김 파일 여부';
+COMMENT ON COLUMN video_files.hidden_reason IS '숨김 사유 (예: 정리 대상, 중복 등)';
 ```
 
 #### 2.2.6 players
@@ -1059,14 +1091,15 @@ INSERT INTO schema_versions (version, description) VALUES
 
 ---
 
-**문서 버전**: 1.1.0
+**문서 버전**: 1.2.0
 **작성일**: 2025-12-09
 **수정일**: 2025-12-09
-**상태**: Updated - Logic/Performance issues fixed
+**상태**: Updated - Catalog 시스템 컬럼 추가
 
 ### 변경 이력
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|----------|
+| 1.2.0 | 2025-12-09 | video_files 테이블에 Catalog 시스템 컬럼 추가 (display_title, content_type, catalog_title, episode_title, ai_description, is_catalog_item, is_hidden, hidden_reason) |
 | 1.1.0 | 2025-12-09 | #7 bracelets UNIQUE 제약조건 추가, #8 conflict_status 컬럼 추가, #11 N+1 쿼리 최적화 (CTE + Materialized View) |
 | 1.0.0 | 2025-12-09 | 초기 버전 |
