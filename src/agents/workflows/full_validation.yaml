@@ -1,0 +1,80 @@
+# 전체 검증 워크플로우
+# 데이터베이스와 파일 시스템의 일관성을 검증합니다.
+
+workflow_id: full_validation
+name: 전체 데이터 검증 워크플로우
+version: "1.0"
+description: |
+  데이터베이스의 모든 레코드를 검증하고,
+  파일 시스템과의 일관성을 체크합니다.
+
+context_isolation:
+  enabled: true
+  max_tokens_per_step: 30000
+
+steps:
+  # 1단계: 스키마 검증
+  - id: validate_schema
+    block_id: BLOCK_VALIDATION
+    action: validate_batch
+    inputs:
+      schema: video_files
+      records: "${params.records}"
+    outputs:
+      - passed
+      - errors
+      - warnings
+    on_failure: continue
+    timeout: 120
+
+  # 2단계: 일관성 체크
+  - id: check_consistency
+    block_id: BLOCK_VALIDATION
+    action: check_consistency
+    inputs:
+      checks:
+        - duplicates
+        - nulls
+        - references
+    outputs:
+      - issues
+    on_failure: continue
+    timeout: 180
+
+  # 3단계: 고아 레코드 검색
+  - id: check_orphans
+    block_id: BLOCK_VALIDATION
+    action: check_orphans
+    inputs:
+      table: video_files
+      path_column: path
+    outputs:
+      - orphans_found
+    on_failure: continue
+    timeout: 300
+
+  # 4단계: 리포트 생성
+  - id: generate_report
+    block_id: BLOCK_EXPORT
+    action: generate_report
+    inputs:
+      table: video_files
+    outputs:
+      - statistics
+    on_failure: skip
+    timeout: 60
+
+  # 5단계: 결과 내보내기
+  - id: export_issues
+    block_id: BLOCK_EXPORT
+    action: export_json
+    inputs:
+      table: validation_logs
+      output_path: "validation_report_${params.date}.json"
+    on_failure: skip
+    condition: "${check_consistency.issues} > 0"
+
+hooks:
+  on_complete:
+    - action: log
+      message: "검증 완료: 에러 ${validate_schema.errors}, 경고 ${validate_schema.warnings}"
