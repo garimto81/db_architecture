@@ -1,0 +1,1186 @@
+# Block Agent System Architecture
+
+> **버전**: 1.1.0 | **작성일**: 2025-12-09 | **수정일**: 2025-12-09 | **상태**: Enhanced Design
+
+---
+
+## 1. 개요
+
+### 1.1 목적
+
+로직의 무결성과 앱 관리의 최적화를 위해, 시스템을 **독립적인 블럭(Block)**으로 분리하고 각 블럭을 **전담 에이전트(Agent)**가 관리하는 아키텍처를 정의합니다.
+
+### 1.2 문제 진단: 왜 블럭화가 필요한가?
+
+#### 1.2.1 컨텍스트 오염 (Context Pollution)
+
+```
+❌ 문제 상황:
+┌─────────────────────────────────────────────────────────────┐
+│  AI Agent가 전체 코드베이스를 한 번에 처리할 때              │
+│                                                              │
+│  Parser 작업 중인데...                                       │
+│  ├── Sync 설정 파일이 노이즈로 작용                          │
+│  ├── Storage 로직이 추론을 방해                              │
+│  └── Export 코드가 환각(Hallucination) 유발                  │
+│                                                              │
+│  결과: 무관한 코드가 AI의 추론 품질을 저하시킴               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 1.2.2 주의력 분산 (Attention Dilution)
+
+```
+토큰 수 vs AI 집중력 그래프:
+
+집중력
+  │
+100%├────╮
+    │    ╰──╮
+ 80%│       ╰──╮
+    │          ╰──╮
+ 60%│             ╰──────╮
+    │                    ╰─────── Lost-in-the-Middle
+ 40%│
+    │
+ 20%│
+    │
+    └────────────────────────────────────────────── 토큰 수
+         10K    50K    100K   500K   1M
+
+※ 최신 LLM이 1M 토큰을 처리해도, '집중력'은 입력량에 반비례
+※ "전체를 다 보고 알아서 고쳐줘" 방식은 파일 50개+ 부터 불가능
+```
+
+#### 1.2.3 해결책: 모듈형 에이전트 아키텍처
+
+| 문제 | 해결책 |
+|------|--------|
+| 컨텍스트 오염 | 블럭별 격리된 컨텍스트 |
+| 주의력 분산 | 블럭당 15-30개 파일 제한 |
+| 에러 전파 | 블럭 간 독립적 실행 |
+| 복잡도 증가 | 수직적 블럭화 (Vertical Slicing) |
+
+### 1.3 핵심 원칙
+
+| 원칙 | 설명 | 효과 |
+|------|------|------|
+| **단일 책임 (SRP)** | 각 블럭은 하나의 명확한 책임만 가짐 | 오류율 감소 |
+| **느슨한 결합** | 블럭 간 의존성 최소화, 인터페이스 통신 | 유지보수 용이 |
+| **높은 응집도** | 관련 로직은 같은 블럭 내 집중 | AI 추론 정확도 향상 |
+| **자율성** | 각 에이전트는 독립적으로 작동 가능 | 병렬 처리 가능 |
+| **관찰 가능성** | 모든 블럭 상태 및 통신 추적 가능 | 디버깅 용이 |
+| **자체 완결성** | 블럭 내에서 모든 관련 파일 접근 가능 | 다른 폴더 참조 불필요 |
+
+### 1.4 시스템 개요도
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          ORCHESTRATOR (중앙 조율자)                           │
+│                     개발자 = 지휘자(Conductor), AI = 연주자                   │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  Task Router │ State Manager │ Error Handler │ Event Bus           │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+└────────────────────────────────────┬────────────────────────────────────────┘
+                                     │
+         ┌───────────┬───────────────┼───────────────┬───────────┐
+         ▼           ▼               ▼               ▼           ▼
+   ┌──────────┐┌──────────┐   ┌──────────┐   ┌──────────┐┌──────────┐
+   │  BLOCK   ││  BLOCK   │   │  BLOCK   │   │  BLOCK   ││  BLOCK   │
+   │  Parser  ││   Sync   │   │ Storage  │   │  Query   ││  Export  │
+   │  Agent   ││  Agent   │   │  Agent   │   │  Agent   ││  Agent   │
+   │ ──────── ││ ──────── │   │ ──────── │   │ ──────── ││ ──────── │
+   │ 15 files ││ 20 files │   │ 25 files │   │ 18 files ││ 12 files │
+   │ 35K tok  ││ 42K tok  │   │ 48K tok  │   │ 38K tok  ││ 28K tok  │
+   └────┬─────┘└────┬─────┘   └────┬─────┘   └────┬─────┘└────┬─────┘
+        │           │               │               │           │
+   ┌────▼─────┐┌────▼─────┐   ┌────▼─────┐   ┌────▼─────┐┌────▼─────┐
+   │  Tools   ││  Tools   │   │  Tools   │   │  Tools   ││  Tools   │
+   │ - Regex  ││ - gspread│   │ - SQLAlch│   │ - Search ││ - FFmpeg │
+   │ - FFprobe││ - SMB    │   │ - Redis  │   │ - Filter ││ - Format │
+   └──────────┘└──────────┘   └──────────┘   └──────────┘└──────────┘
+```
+
+---
+
+## 2. 수직적 블럭화 (Vertical Slicing)
+
+### 2.1 기존 계층형 vs 기능형 블럭화
+
+```
+❌ 기존 (계층형 - Horizontal Slicing):
+┌─────────────────────────────────────────────────────────────┐
+│  /components/  → UI 컴포넌트들                              │
+│  /services/    → 비즈니스 로직                              │
+│  /models/      → 데이터 모델                                │
+│  /utils/       → 유틸리티                                   │
+│                                                              │
+│  문제: Parser 기능 하나 수정하려면 4개 폴더를 다 뒤져야 함   │
+│        → AI가 관련 없는 파일도 읽어야 함 → 오류 급증        │
+└─────────────────────────────────────────────────────────────┘
+
+✅ 변경 (기능형 - Vertical Slicing):
+┌─────────────────────────────────────────────────────────────┐
+│  /blocks/parser/                                             │
+│  ├── agents/           # Parser 전담 에이전트               │
+│  ├── patterns/         # 정규식 패턴들                       │
+│  ├── models/           # Parser 전용 모델                    │
+│  ├── utils/            # Parser 전용 유틸                    │
+│  ├── tests/            # Parser 테스트                       │
+│  └── .block_rules      # 블럭 전담 에이전트 규칙             │
+│                                                              │
+│  효과: 모든 관련 파일이 한 폴더에 → AI가 "이것만 보면 완벽"  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 2.2 블럭 폴더 구조
+
+```
+/blocks/
+├── parser/                    # Parser Block
+│   ├── .block_rules           # 에이전트 규칙 (제약조건)
+│   ├── agents/
+│   │   └── parser_agent.py
+│   ├── patterns/
+│   │   ├── wsop_pattern.py
+│   │   ├── ggmillions_pattern.py
+│   │   └── pad_pattern.py
+│   ├── models/
+│   │   └── parsed_file.py
+│   ├── tools/
+│   │   ├── regex_engine.py
+│   │   └── ffprobe_wrapper.py
+│   └── tests/
+│       └── test_patterns.py
+│
+├── sync/                      # Sync Block
+│   ├── .block_rules
+│   ├── agents/
+│   │   └── sync_agent.py
+│   ├── connectors/
+│   │   ├── nas_connector.py
+│   │   └── sheets_connector.py
+│   ├── models/
+│   │   └── sync_result.py
+│   └── tests/
+│
+├── storage/                   # Storage Block
+│   ├── .block_rules
+│   ├── agents/
+│   │   └── storage_agent.py
+│   ├── repositories/
+│   │   ├── video_file_repo.py
+│   │   └── hand_clip_repo.py
+│   ├── models/
+│   └── tests/
+│
+├── query/                     # Query Block
+│   └── ...
+│
+└── export/                    # Export Block
+    └── ...
+```
+
+### 2.3 블럭 규칙 파일 (.block_rules)
+
+각 블럭 폴더에 배치하여 **'지능형 경계선'**을 설정:
+
+```yaml
+# /blocks/parser/.block_rules
+
+block_id: BLOCK_PARSER
+name: "파일명 파싱 블럭"
+version: "1.0.0"
+
+# 에이전트 역할 정의 (Constraints)
+role: |
+  너는 파일명 파싱 전문가다.
+  오직 파일명에서 메타데이터를 추출하는 것만 담당한다.
+  다른 블럭의 파일은 절대 수정하지 마라.
+
+# 접근 가능 범위
+scope:
+  allowed_paths:
+    - /blocks/parser/**
+    - /shared/models/parsed_file.py   # 공유 모델만 읽기
+  forbidden_paths:
+    - /blocks/sync/**
+    - /blocks/storage/**
+    - /config/credentials/**
+
+# 의존성 선언
+dependencies:
+  - block: BLOCK_VALIDATION
+    interface: validate_parsed_data
+  - block: BLOCK_STORAGE
+    interface: save_video_file
+
+# 입출력 계약
+contract:
+  inputs:
+    - name: raw_filename
+      type: str
+      required: true
+    - name: project_code
+      type: str
+      required: false
+  outputs:
+    - name: parsed_metadata
+      type: ParsedFile
+    - name: confidence
+      type: float
+
+# 금지 행위
+constraints:
+  - "DB에 직접 쓰기 금지 (Storage Block 통해서만)"
+  - "외부 API 직접 호출 금지"
+  - "다른 블럭의 내부 상태 접근 금지"
+
+# 성능 제한
+limits:
+  max_files: 30
+  max_tokens: 50000
+  timeout_seconds: 60
+```
+
+---
+
+## 3. 블럭 사이즈 판단 기준 (Sizing Guide)
+
+### 3.1 정량적 기준
+
+| 구분 | 권장 범위 | 위험 신호 (Red Flag) |
+|------|----------|---------------------|
+| **파일 수** | 15-30개 | 50개 이상 |
+| **토큰 수** | 30K-50K | 100K 이상 |
+| **코드 라인** | 2,000-5,000 | 10,000 이상 |
+| **응답 시간** | 5초 이내 | 10초 이상 ("Thinking" 오래 걸림) |
+
+### 3.2 정성적 기준
+
+| 구분 | 판단 기준 | 분할 필요 신호 |
+|------|----------|---------------|
+| **논리적 범위** | 단일 책임(SRP) 원칙 | 설명이 두 문장 이상 필요 |
+| **독립성** | Self-Contained (자체 완결) | 다른 폴더 파일을 자꾸 열어야 함 |
+| **변경 빈도** | 함께 변경되는 파일들 | 한 기능 수정에 여러 블럭 수정 필요 |
+| **팀 소유권** | 한 팀이 관리 가능한 범위 | 여러 팀이 동시 수정 |
+
+### 3.3 블럭 분할 예시
+
+```
+❌ 너무 큰 블럭:
+┌─────────────────────────────────────────────────────────────┐
+│  BLOCK_DATA_PROCESSING (데이터 처리 블럭)                    │
+│  ├── 파일 파싱                                               │
+│  ├── 데이터 검증                                             │
+│  ├── DB 저장                                                 │
+│  └── 캐시 관리                                               │
+│                                                              │
+│  → 100개 파일, 200K 토큰                                     │
+│  → "회원가입도 하고 결제도 한다" 같은 상황                   │
+└─────────────────────────────────────────────────────────────┘
+
+✅ 적절히 분할된 블럭:
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│ BLOCK_PARSER │ │ BLOCK_VALID  │ │BLOCK_STORAGE │ │ BLOCK_CACHE  │
+│ 20 files     │ │ 15 files     │ │ 25 files     │ │ 10 files     │
+│ 35K tok      │ │ 28K tok      │ │ 45K tok      │ │ 20K tok      │
+└──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
+```
+
+---
+
+## 4. 블럭 정의
+
+### 4.1 블럭 분류 체계
+
+```
+BLOCKS
+├── Core Blocks (핵심) - 비즈니스 로직
+│   ├── Parser Block      # 파일명/데이터 파싱
+│   ├── Sync Block        # 외부 데이터 동기화
+│   ├── Storage Block     # 데이터 저장/조회
+│   └── Query Block       # 검색/필터링
+│
+├── Support Blocks (지원) - 보조 기능
+│   ├── Validation Block  # 데이터 검증
+│   ├── Transform Block   # 데이터 변환
+│   └── Export Block      # 데이터 내보내기
+│
+└── Infrastructure Blocks (인프라) - 시스템 기반
+    ├── Config Block      # 설정 관리
+    ├── Logging Block     # 로그 수집
+    └── Monitor Block     # 상태 모니터링
+```
+
+### 4.2 Core Blocks 상세
+
+#### 4.2.1 Parser Block
+
+```yaml
+block_id: BLOCK_PARSER
+responsibility: 파일명 및 원시 데이터에서 구조화된 메타데이터 추출
+agent: ParserAgent
+
+# 사이즈 제한
+size_limits:
+  max_files: 25
+  max_tokens: 40000
+
+inputs:
+  - raw_filename: str
+  - file_path: str
+  - project_code: str
+
+outputs:
+  - parsed_metadata: ParsedFile
+  - parse_confidence: float
+  - parse_errors: List[str]
+
+tools:
+  - RegexEngine: 정규식 패턴 매칭
+  - FFprobe: 미디어 메타데이터 추출
+  - DateParser: 날짜 형식 파싱
+
+internal_state:
+  - pattern_cache: Dict[str, Pattern]
+  - parse_history: List[ParseResult]
+  - error_patterns: Set[str]
+
+capabilities:
+  - multi_pattern_matching: 여러 패턴 순차 시도
+  - fallback_parsing: 패턴 실패 시 휴리스틱 사용
+  - confidence_scoring: 파싱 결과 신뢰도 계산
+```
+
+**책임 경계:**
+| 이 블럭이 하는 것 | 이 블럭이 하지 않는 것 |
+|------------------|----------------------|
+| 파일명 패턴 매칭 | 파일 저장 (→ Storage) |
+| 메타데이터 추출 | 데이터 검증 (→ Validation) |
+| 포맷 정규화 | DB 쓰기 (→ Storage) |
+| 미디어 정보 추출 | 외부 API 호출 (→ Sync) |
+
+#### 4.2.2 Sync Block
+
+```yaml
+block_id: BLOCK_SYNC
+responsibility: 외부 데이터 소스와 내부 DB 간 동기화
+agent: SyncAgent
+
+size_limits:
+  max_files: 30
+  max_tokens: 50000
+
+inputs:
+  - source_type: Literal['nas', 'sheet', 'api']
+  - source_config: SourceConfig
+  - sync_mode: Literal['full', 'incremental']
+
+outputs:
+  - sync_result: SyncResult
+  - changed_records: List[UUID]
+  - conflicts: List[Conflict]
+
+tools:
+  - SMBClient: NAS 파일 시스템 접근
+  - GSpreadClient: Google Sheets API
+  - CheckpointManager: 증분 동기화 상태 관리
+
+capabilities:
+  - incremental_sync: mtime/row 기반 증분
+  - conflict_detection: 양방향 충돌 감지
+  - batch_processing: 대량 데이터 배치 처리
+  - rate_limiting: API 제한 대응
+```
+
+#### 4.2.3 Storage Block
+
+```yaml
+block_id: BLOCK_STORAGE
+responsibility: 데이터 영속성 및 트랜잭션 관리
+agent: StorageAgent
+
+size_limits:
+  max_files: 35
+  max_tokens: 55000
+
+inputs:
+  - operation: Literal['create', 'read', 'update', 'delete', 'bulk']
+  - entity_type: str
+  - data: Union[dict, List[dict]]
+  - options: StorageOptions
+
+outputs:
+  - result: StorageResult
+  - affected_ids: List[UUID]
+  - rollback_info: Optional[RollbackInfo]
+
+tools:
+  - SQLAlchemyORM: PostgreSQL 접근
+  - RedisClient: 캐시 관리
+  - TransactionManager: 트랜잭션 제어
+
+capabilities:
+  - bulk_operations: BULK INSERT/UPDATE
+  - transaction_support: ACID 보장
+  - cache_management: 읽기 캐시
+  - soft_delete: 논리적 삭제
+```
+
+#### 4.2.4 Query Block
+
+```yaml
+block_id: BLOCK_QUERY
+responsibility: 복잡한 검색 및 필터링 로직 처리
+agent: QueryAgent
+
+size_limits:
+  max_files: 25
+  max_tokens: 40000
+
+inputs:
+  - query_type: Literal['search', 'filter', 'aggregate']
+  - criteria: QueryCriteria
+  - pagination: PaginationParams
+
+outputs:
+  - results: List[Entity]
+  - total_count: int
+  - facets: Dict[str, List[Facet]]
+
+capabilities:
+  - full_text_search: 제목/설명 검색
+  - faceted_search: 다면 검색
+  - dynamic_filtering: 동적 조건 조합
+  - result_ranking: 관련성 순위
+```
+
+---
+
+## 5. 에이전트 설계
+
+### 5.1 에이전트 기본 구조
+
+```python
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+from enum import Enum
+
+class AgentState(Enum):
+    IDLE = "idle"
+    PROCESSING = "processing"
+    WAITING = "waiting"
+    ERROR = "error"
+    COMPLETED = "completed"
+
+@dataclass
+class AgentContext:
+    """에이전트 실행 컨텍스트"""
+    task_id: str
+    parent_task_id: Optional[str]
+    correlation_id: str
+    block_rules: Dict[str, Any]  # .block_rules 내용
+    timeout_seconds: int = 300
+    retry_count: int = 0
+    max_retries: int = 3
+
+@dataclass
+class AgentResult:
+    """에이전트 실행 결과"""
+    success: bool
+    data: Any
+    errors: List[str]
+    metrics: Dict[str, float]
+    next_actions: List[str]
+    tokens_used: int  # 토큰 사용량 추적
+
+class BaseAgent(ABC):
+    """블럭 전담 에이전트 기본 클래스"""
+
+    def __init__(self, block_id: str, config: Dict[str, Any]):
+        self.block_id = block_id
+        self.config = config
+        self.state = AgentState.IDLE
+        self.tools: Dict[str, Any] = {}
+        self.memory: Dict[str, Any] = {}
+        self.block_rules = self._load_block_rules()
+
+    def _load_block_rules(self) -> Dict[str, Any]:
+        """블럭 규칙 파일 로드"""
+        rules_path = f"/blocks/{self.block_id.lower().replace('block_', '')}/.block_rules"
+        # YAML 파싱 및 반환
+        return load_yaml(rules_path)
+
+    def _check_scope(self, file_path: str) -> bool:
+        """파일 접근 범위 검사"""
+        allowed = self.block_rules.get('scope', {}).get('allowed_paths', [])
+        forbidden = self.block_rules.get('scope', {}).get('forbidden_paths', [])
+
+        for pattern in forbidden:
+            if fnmatch(file_path, pattern):
+                raise ScopeViolationError(f"Forbidden path: {file_path}")
+
+        for pattern in allowed:
+            if fnmatch(file_path, pattern):
+                return True
+
+        raise ScopeViolationError(f"Path not in allowed scope: {file_path}")
+
+    @abstractmethod
+    async def execute(self, context: AgentContext, input_data: Any) -> AgentResult:
+        """메인 실행 로직"""
+        pass
+
+    @abstractmethod
+    def get_capabilities(self) -> List[str]:
+        """에이전트 능력 목록"""
+        pass
+
+    async def pre_execute(self, context: AgentContext) -> None:
+        """실행 전 준비 - 제약조건 검증"""
+        self.state = AgentState.PROCESSING
+        self._validate_constraints(context)
+
+    def _validate_constraints(self, context: AgentContext) -> None:
+        """블럭 규칙의 제약조건 검증"""
+        constraints = self.block_rules.get('constraints', [])
+        limits = self.block_rules.get('limits', {})
+
+        if limits.get('max_tokens') and context.estimated_tokens > limits['max_tokens']:
+            raise TokenLimitExceeded(f"Estimated tokens exceed limit: {context.estimated_tokens}")
+```
+
+### 5.2 에이전트 구현 예시: ParserAgent
+
+```python
+class ParserAgent(BaseAgent):
+    """파일 파싱 전담 에이전트"""
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__("BLOCK_PARSER", config)
+        self._init_tools()
+        self._load_patterns()
+
+    def _init_tools(self):
+        self.tools = {
+            "regex": RegexEngine(),
+            "ffprobe": FFprobeWrapper(),
+            "date_parser": DateParser()
+        }
+
+    def _load_patterns(self):
+        """프로젝트별 파싱 패턴 로드 (블럭 내부에서만)"""
+        patterns_dir = "/blocks/parser/patterns/"
+        self._check_scope(patterns_dir)  # 범위 검증
+
+        self.memory["patterns"] = {
+            "WSOP": [WSOPBraceletPattern, WSOPCircuitPattern],
+            "GGMILLIONS": [GGMillionsPattern],
+            "PAD": [PADPattern],
+            "GOG": [GOGPattern],
+            "MPP": [MPPPattern],
+        }
+
+    def get_capabilities(self) -> List[str]:
+        return [
+            "parse_filename",
+            "extract_metadata",
+            "detect_project",
+            "normalize_values"
+        ]
+
+    async def execute(self, context: AgentContext, input_data: ParseInput) -> AgentResult:
+        await self.pre_execute(context)
+        tokens_used = 0
+
+        try:
+            # 1. 프로젝트 감지
+            project_code = input_data.project_code or self._detect_project(input_data.filename)
+            tokens_used += estimate_tokens(input_data.filename)
+
+            # 2. 패턴 매칭
+            patterns = self.memory["patterns"].get(project_code, [])
+            parsed = None
+            confidence = 0.0
+
+            for pattern_cls in patterns:
+                pattern = pattern_cls()
+                result = pattern.match(input_data.filename)
+                if result and result.confidence > confidence:
+                    parsed = result.data
+                    confidence = result.confidence
+                tokens_used += pattern.tokens_used
+
+            # 3. 미디어 메타데이터 추출 (옵션)
+            if input_data.extract_media_info and input_data.file_path:
+                self._check_scope(input_data.file_path)  # 범위 검증
+                media_info = await self.tools["ffprobe"].analyze(input_data.file_path)
+                parsed.update(media_info)
+                tokens_used += estimate_tokens(str(media_info))
+
+            # 4. 결과 반환
+            result = AgentResult(
+                success=parsed is not None,
+                data=ParseOutput(
+                    parsed_metadata=parsed,
+                    confidence=confidence,
+                    project_code=project_code
+                ),
+                errors=[] if parsed else ["No matching pattern found"],
+                metrics={"confidence": confidence, "patterns_tried": len(patterns)},
+                next_actions=["validate", "store"] if parsed else ["manual_review"],
+                tokens_used=tokens_used
+            )
+
+            await self.post_execute(result)
+            return result
+
+        except ScopeViolationError as e:
+            return AgentResult(
+                success=False,
+                data=None,
+                errors=[f"Scope violation: {str(e)}"],
+                metrics={},
+                next_actions=["review_block_rules"],
+                tokens_used=tokens_used
+            )
+        except Exception as e:
+            return await self.handle_error(e, context)
+```
+
+---
+
+## 6. 오케스트레이션 워크플로우
+
+### 6.1 개발자 역할 전환: Coder → Conductor
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    패러다임 전환: AI 팀 관리자가 되어라                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ❌ 기존 방식 (Coder):                                                       │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  개발자 → "전체 코드 분석해서 파서 로직 수정해줘"                        │ │
+│  │  AI     → (50개 파일 읽고, 환각 발생, 잘못된 코드 생성)                  │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  ✅ 새 방식 (Conductor):                                                     │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  개발자 → Orchestrator → "Parser 블럭 에이전트에게 패턴 추가 지시해"    │ │
+│  │  Orchestrator → ParserAgent → (15개 파일만 집중, 정확한 수정)           │ │
+│  │  ParserAgent → Orchestrator → "완료, Validation 블럭에 검증 요청"       │ │
+│  │  Orchestrator → ValidationAgent → (검증 실행)                           │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 6.2 3단계 워크플로우
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           개발자 워크플로우                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  1️⃣ 지휘 (Orchestration)                                                    │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  개발자: "결제 블럭 에이전트에게 PG사 연동 로직 업데이트를 시켜"         │ │
+│  │          ↓                                                               │ │
+│  │  Orchestrator가 적절한 블럭 에이전트 선택 및 컨텍스트 전달               │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  2️⃣ 실행 (Execution)                                                        │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  블럭 에이전트: /blocks/payment 폴더 내에서만 안전하게 코드 수정         │ │
+│  │  - .block_rules의 제약조건 준수                                          │ │
+│  │  - 다른 블럭 파일 접근 불가                                              │ │
+│  │  - 토큰 제한 내에서 작업                                                 │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  3️⃣ 검증 (Integration)                                                      │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  - 수정된 블럭이 전체와 잘 맞는지 확인                                   │ │
+│  │  - 블럭 간 인터페이스 계약 검증                                          │ │
+│  │  - 통합 테스트 실행                                                      │ │
+│  │  - 문제 없으면 병합                                                      │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 6.3 오케스트레이터 구현
+
+```python
+class Orchestrator:
+    """
+    중앙 조율자: 개발자(지휘자)와 에이전트(연주자) 사이의 조율
+
+    책임:
+    - 작업 라우팅: 요청을 적절한 블럭으로 전달
+    - 컨텍스트 격리: 블럭별 독립된 컨텍스트 제공
+    - 상태 관리: 전역 상태 및 트랜잭션 관리
+    - 에러 처리: 장애 복구 및 에스컬레이션
+    """
+
+    def __init__(self):
+        self.registry = AgentRegistry
+        self.state_manager = StateManager()
+        self.event_bus = EventBus()
+        self.task_queue = TaskQueue()
+
+    async def dispatch(self, command: str, target_block: str, params: Dict) -> AgentResult:
+        """
+        개발자 명령을 블럭 에이전트에게 전달
+
+        예: dispatch("update PG integration", "BLOCK_PAYMENT", {...})
+        """
+        agent = self.registry.get_agent(target_block)
+        context = self._create_isolated_context(target_block, params)
+
+        # 블럭 규칙 검증
+        if not self._validate_block_rules(agent, params):
+            return AgentResult(success=False, errors=["Block rules violation"])
+
+        # 에이전트 실행
+        result = await agent.execute(context, params)
+
+        # 후속 작업 처리
+        if result.success and result.next_actions:
+            await self._handle_next_actions(result.next_actions, result.data)
+
+        return result
+
+    def _create_isolated_context(self, block_id: str, params: Dict) -> AgentContext:
+        """블럭별 격리된 컨텍스트 생성"""
+        return AgentContext(
+            task_id=str(uuid4()),
+            correlation_id=str(uuid4()),
+            block_rules=self._load_block_rules(block_id),
+            estimated_tokens=self._estimate_context_tokens(block_id)
+        )
+
+    async def execute_workflow(self, workflow: Workflow) -> WorkflowResult:
+        """워크플로우 실행"""
+        context = self._create_context(workflow)
+
+        for step in workflow.steps:
+            agent = self.registry.get_agent(step.block_id)
+
+            # 이전 단계 출력을 현재 입력으로
+            input_data = self._prepare_input(step, context)
+
+            # 에이전트 실행 (격리된 컨텍스트)
+            result = await agent.execute(context, input_data)
+
+            # 결과 저장
+            self.state_manager.save_step_result(context.task_id, step.id, result)
+
+            # 실패 시 처리
+            if not result.success:
+                if step.on_failure == "abort":
+                    return WorkflowResult(success=False, error=result.errors)
+                elif step.on_failure == "skip":
+                    continue
+                elif step.on_failure == "fallback":
+                    result = await self._execute_fallback(step, context)
+
+            # 이벤트 발행
+            await self.event_bus.publish(StepCompletedEvent(
+                workflow_id=workflow.id,
+                step_id=step.id,
+                result=result
+            ))
+
+        return WorkflowResult(success=True, data=context.accumulated_data)
+```
+
+### 6.4 워크플로우 정의 예시
+
+```yaml
+# workflows/nas_sync_workflow.yaml
+workflow_id: WF_NAS_SYNC
+name: NAS 파일 동기화 워크플로우
+version: "1.0"
+
+# 컨텍스트 격리 설정
+context_isolation:
+  enabled: true
+  max_tokens_per_step: 50000
+
+steps:
+  - id: scan_files
+    block_id: BLOCK_SYNC
+    action: scan_nas
+    inputs:
+      source_type: nas
+      sync_mode: incremental
+    outputs:
+      - new_files
+      - modified_files
+    on_failure: abort
+    token_budget: 40000
+
+  - id: parse_files
+    block_id: BLOCK_PARSER
+    action: batch_parse
+    inputs:
+      files: ${scan_files.new_files}
+    outputs:
+      - parsed_metadata
+    on_failure: skip
+    parallel: true
+    token_budget: 35000
+
+  - id: validate_data
+    block_id: BLOCK_VALIDATION
+    action: validate_batch
+    inputs:
+      data: ${parse_files.parsed_metadata}
+      schema: video_file_schema
+    outputs:
+      - valid_records
+      - invalid_records
+    on_failure: continue
+    token_budget: 30000
+
+  - id: store_data
+    block_id: BLOCK_STORAGE
+    action: bulk_upsert
+    inputs:
+      entity_type: video_file
+      data: ${validate_data.valid_records}
+    outputs:
+      - stored_ids
+    on_failure: rollback
+    token_budget: 45000
+
+hooks:
+  on_start:
+    - notify: "NAS 동기화 시작"
+  on_complete:
+    - notify: "NAS 동기화 완료: ${store_data.stored_ids.length}건"
+  on_error:
+    - alert: "NAS 동기화 실패"
+    - rollback: true
+```
+
+---
+
+## 7. 블럭 간 통신
+
+### 7.1 통신 패턴
+
+| 패턴 | 사용 시점 | 구현 | 격리 수준 |
+|------|----------|------|----------|
+| **동기 호출** | 즉시 응답 필요 | Direct method call | 높음 |
+| **비동기 메시지** | Fire-and-forget | Event Bus | 중간 |
+| **요청-응답** | 결과 대기 필요 | Message Queue | 높음 |
+| **발행-구독** | 다중 수신자 | Pub/Sub | 낮음 |
+
+### 7.2 인터페이스 계약 (Contract)
+
+블럭 간 통신은 **명시적 인터페이스**를 통해서만:
+
+```python
+# /shared/contracts/parser_to_storage.py
+
+@dataclass
+class ParserToStorageContract:
+    """Parser → Storage 블럭 간 계약"""
+
+    # 입력 스키마
+    input_schema = {
+        "parsed_files": List[ParsedFile],
+        "batch_options": {
+            "batch_size": int,
+            "upsert_mode": Literal["insert", "update", "upsert"]
+        }
+    }
+
+    # 출력 스키마
+    output_schema = {
+        "stored_ids": List[UUID],
+        "failed_items": List[FailedItem],
+        "stats": StorageStats
+    }
+
+    # 에러 코드
+    error_codes = {
+        "DUPLICATE_KEY": "중복 키 존재",
+        "VALIDATION_FAILED": "데이터 검증 실패",
+        "CONNECTION_ERROR": "DB 연결 실패"
+    }
+```
+
+### 7.3 이벤트 버스
+
+```python
+class EventBus:
+    """블럭 간 비동기 이벤트 통신 (격리된 컨텍스트)"""
+
+    def __init__(self):
+        self._subscribers: Dict[str, List[Callable]] = defaultdict(list)
+        self._redis = Redis()
+
+    def subscribe(self, event_type: str, handler: Callable):
+        """이벤트 구독"""
+        self._subscribers[event_type].append(handler)
+
+    async def publish(self, event: Event):
+        """이벤트 발행 (발신 블럭 정보 포함)"""
+        event.source_block = event.source_block or "UNKNOWN"
+        event.timestamp = datetime.utcnow()
+
+        # 로컬 핸들러 실행
+        for handler in self._subscribers[event.type]:
+            asyncio.create_task(handler(event))
+
+        # 분산 환경용 Redis Pub/Sub
+        await self._redis.publish(
+            f"events:{event.type}",
+            event.to_json()
+        )
+
+    async def request(self, target_block: str, action: str, data: Any, timeout: int = 30) -> Any:
+        """요청-응답 패턴 (블럭 격리 유지)"""
+        correlation_id = str(uuid4())
+        response_channel = f"response:{correlation_id}"
+
+        # 응답 대기 설정
+        future = asyncio.Future()
+        self._pending_responses[correlation_id] = future
+
+        # 요청 발행
+        await self.publish(RequestEvent(
+            target_block=target_block,
+            action=action,
+            data=data,
+            correlation_id=correlation_id,
+            reply_to=response_channel
+        ))
+
+        # 응답 대기
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            raise BlockTimeoutError(f"Block {target_block} did not respond in {timeout}s")
+```
+
+---
+
+## 8. 에러 처리 및 복구
+
+### 8.1 에러 분류
+
+| 레벨 | 예시 | 처리 | 블럭 영향 |
+|------|------|------|----------|
+| **WARN** | 파싱 실패 (일부) | 로그 + 계속 | 해당 블럭만 |
+| **ERROR** | DB 연결 실패 | 재시도 | 해당 블럭만 |
+| **CRITICAL** | 데이터 손상 | 중단 + 알림 | 워크플로우 중단 |
+| **FATAL** | 시스템 장애 | 긴급 복구 | 전체 시스템 |
+
+### 8.2 블럭 격리: Circuit Breaker
+
+```python
+class CircuitBreaker:
+    """블럭 장애 격리 - 한 블럭 장애가 전체로 전파되지 않도록"""
+
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: int = 60):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failures = 0
+        self.last_failure_time = None
+        self.state = "closed"  # closed, open, half-open
+
+    def record_failure(self):
+        self.failures += 1
+        self.last_failure_time = time.time()
+        if self.failures >= self.failure_threshold:
+            self.state = "open"
+            logger.warning(f"Circuit breaker OPEN for block - too many failures")
+
+    def record_success(self):
+        self.failures = 0
+        self.state = "closed"
+
+    def can_execute(self) -> bool:
+        if self.state == "closed":
+            return True
+        if self.state == "open":
+            if time.time() - self.last_failure_time > self.recovery_timeout:
+                self.state = "half-open"
+                return True
+            return False
+        return True  # half-open
+
+    def wrap(self, func):
+        """데코레이터로 함수 감싸기"""
+        async def wrapper(*args, **kwargs):
+            if not self.can_execute():
+                raise CircuitOpenError("Circuit breaker is open")
+            try:
+                result = await func(*args, **kwargs)
+                self.record_success()
+                return result
+            except Exception as e:
+                self.record_failure()
+                raise
+        return wrapper
+```
+
+---
+
+## 9. 모니터링 및 관찰 가능성
+
+### 9.1 블럭별 메트릭
+
+```python
+class BlockMetrics:
+    """블럭별 메트릭 수집"""
+
+    def __init__(self, block_id: str):
+        self.block_id = block_id
+        self._metrics = {
+            "execution_count": Counter(),
+            "execution_time": Histogram(),
+            "error_count": Counter(),
+            "tokens_used": Counter(),
+            "queue_size": Gauge(),
+            "context_size": Gauge(),  # 컨텍스트 크기 추적
+        }
+
+    def record_execution(self, duration: float, success: bool, tokens: int):
+        self._metrics["execution_count"].inc()
+        self._metrics["execution_time"].observe(duration)
+        self._metrics["tokens_used"].inc(tokens)
+        if not success:
+            self._metrics["error_count"].inc()
+
+    def export_prometheus(self) -> str:
+        """Prometheus 포맷 출력"""
+        lines = []
+        for name, metric in self._metrics.items():
+            lines.append(f'block_{name}{{block="{self.block_id}"}} {metric.value}')
+        return "\n".join(lines)
+```
+
+### 9.2 대시보드
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      BLOCK AGENT SYSTEM DASHBOARD                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐  │
+│  │   System Health     │  │  Active Workflows   │  │   Error Rate        │  │
+│  │   ████████░░ 80%    │  │        12           │  │   0.5%              │  │
+│  └─────────────────────┘  └─────────────────────┘  └─────────────────────┘  │
+│                                                                              │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                      Block Status & Token Usage                        │  │
+│  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐              │  │
+│  │  │ Parser │ │  Sync  │ │Storage │ │ Query  │ │ Export │              │  │
+│  │  │   🟢   │ │   🟢   │ │   🟢   │ │   🟡   │ │   🟢   │              │  │
+│  │  │ 1.2ms  │ │ 15.3ms │ │ 2.1ms  │ │ 45.2ms │ │ 8.7ms  │              │  │
+│  │  │ 35K tok│ │ 42K tok│ │ 48K tok│ │ 38K tok│ │ 28K tok│              │  │
+│  │  │████░░░░│ │█████░░░│ │██████░░│ │█████░░░│ │████░░░░│              │  │
+│  │  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘              │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                    Context Pollution Monitor                           │  │
+│  │  Parser Block: 15/30 files | 35K/50K tokens | ✅ Healthy              │  │
+│  │  Sync Block:   20/30 files | 42K/50K tokens | ✅ Healthy              │  │
+│  │  Storage Block: 25/35 files | 48K/55K tokens | ⚠️ Near limit          │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 10. 구현 가이드라인
+
+### 10.1 새 블럭 추가 체크리스트
+
+```markdown
+□ 1. 블럭 분석
+   □ 단일 책임 원칙 준수 여부 확인
+   □ 예상 파일 수 < 30개
+   □ 예상 토큰 < 50K
+
+□ 2. 폴더 구조 생성
+   □ /blocks/{block_name}/ 생성
+   □ .block_rules 파일 작성
+   □ agents/, models/, tools/, tests/ 하위 폴더
+
+□ 3. 에이전트 클래스 구현
+   □ BaseAgent 상속
+   □ execute(), get_capabilities() 구현
+   □ _check_scope() 호출로 범위 검증
+
+□ 4. 인터페이스 계약 정의
+   □ /shared/contracts/ 에 계약 파일 생성
+   □ 입출력 스키마 정의
+
+□ 5. 에이전트 등록
+   □ AgentRegistry.register() 호출
+
+□ 6. 워크플로우 통합
+   □ 기존 워크플로우에 단계 추가 또는 새 워크플로우 정의
+
+□ 7. 테스트 작성
+   □ 단위 테스트: 에이전트 로직
+   □ 통합 테스트: 블럭 간 통신
+   □ 범위 위반 테스트: 금지된 경로 접근 시도
+```
+
+### 10.2 프레임워크 선택 가이드
+
+| 요구사항 | 권장 프레임워크 | 블럭화 지원 |
+|----------|----------------|------------|
+| 복잡한 상태 관리 필요 | **LangGraph** | ✅ 그래프 노드 = 블럭 |
+| 역할 기반 팀 구성 | **CrewAI** | ✅ Agent = 블럭 전담 |
+| 대화형 협업 필요 | **AutoGen** | ⚠️ 추가 설정 필요 |
+| 완전한 커스텀 필요 | **직접 구현** | ✅ 완전 제어 |
+
+---
+
+## 11. 참조
+
+### 11.1 관련 문서
+
+| 문서 | 설명 |
+|------|------|
+| [LLD_INDEX.md](../lld/LLD_INDEX.md) | Low-Level Design 인덱스 |
+| [01_DATABASE_SCHEMA.md](../lld/01_DATABASE_SCHEMA.md) | DB 스키마 (Storage Block 참조) |
+| [02_SYNC_SYSTEM.md](../lld/02_SYNC_SYSTEM.md) | 동기화 시스템 (Sync Block 참조) |
+| [03_FILE_PARSER.md](../lld/03_FILE_PARSER.md) | 파일 파서 (Parser Block 참조) |
+
+### 11.2 외부 참조
+
+| 리소스 | URL |
+|--------|-----|
+| LangGraph 문서 | https://langchain-ai.github.io/langgraph/ |
+| CrewAI 문서 | https://docs.crewai.com/ |
+| AutoGen 문서 | https://microsoft.github.io/autogen/ |
+| Multi-Agent 아키텍처 | https://www.marktechpost.com/2025/11/15/comparing-the-top-5-ai-agent-architectures-in-2025/ |
+
+---
+
+## 12. 변경 이력
+
+| 버전 | 날짜 | 변경 내용 |
+|------|------|----------|
+| 1.1.0 | 2025-12-09 | 컨텍스트 오염/주의력 분산 문제 진단, 수직적 블럭화(Vertical Slicing), 블럭 사이즈 판단 기준, Conductor 워크플로우, .block_rules 파일 |
+| 1.0.0 | 2025-12-09 | 초기 버전: 블럭 정의, 에이전트 설계, 오케스트레이터, 통신 프로토콜 |
+
+---
+
+**문서 버전**: 1.1.0
+**작성일**: 2025-12-09
+**수정일**: 2025-12-09
+**상태**: Enhanced Design
