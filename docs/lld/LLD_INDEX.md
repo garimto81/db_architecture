@@ -1,6 +1,6 @@
 # LLD: GGP Poker Video Catalog DB
 
-> **버전**: 1.1.0 | **기준 PRD**: v5.1 | **작성일**: 2025-12-09 | **수정일**: 2025-12-09
+> **버전**: 1.2.0 | **기준 PRD**: v5.1 | **작성일**: 2025-12-09 | **수정일**: 2025-12-09
 
 ---
 
@@ -16,7 +16,8 @@ docs/lld/
 ├── 01_DATABASE_SCHEMA.md  # 데이터베이스 스키마 상세 설계
 ├── 02_SYNC_SYSTEM.md      # 동기화 시스템 상세 설계
 ├── 03_FILE_PARSER.md      # 파일명 파서 상세 설계
-└── 04_DOCKER_DEPLOYMENT.md # Docker 배포 상세 설계
+├── 04_DOCKER_DEPLOYMENT.md # Docker 배포 상세 설계
+└── 05_AGENT_SYSTEM.md     # Block Agent System 상세 설계 (NEW)
 ```
 
 ### 1.2 시스템 아키텍처 개요
@@ -246,27 +247,67 @@ Google Sheets                Sync Worker                     PostgreSQL
 | [02_SYNC_SYSTEM.md](./02_SYNC_SYSTEM.md) | 동기화 시스템 | 스케줄러, 증분 로직, 충돌 해결 |
 | [03_FILE_PARSER.md](./03_FILE_PARSER.md) | 파일명 파서 | 7개 프로젝트 파서, 정규식, 테스트 케이스 |
 | [04_DOCKER_DEPLOYMENT.md](./04_DOCKER_DEPLOYMENT.md) | Docker 배포 | compose 설정, 볼륨, 운영 명령어 |
+| [05_AGENT_SYSTEM.md](./05_AGENT_SYSTEM.md) | Block Agent System | 에이전트 아키텍처, 워크플로우, 구현 |
+
+---
+
+### 5.1 Block Agent System 요약 (신규)
+
+Block Agent System은 AI 기반 개발의 컨텍스트 격리 및 모듈화를 위한 아키텍처입니다.
+
+**구성 요소:**
+
+| 모듈 | 경로 | 설명 |
+|------|------|------|
+| Core | `src/agents/core/` | BaseAgent, Registry, EventBus, CircuitBreaker |
+| Orchestrator | `src/agents/orchestrator/` | 워크플로우 실행, 블럭 조율 |
+| Block Agents | `src/agents/blocks/` | 6개 전담 에이전트 (Parser, Sync, Storage, Query, Validation, Export) |
+| Workflows | `src/agents/workflows/` | YAML 워크플로우 정의 |
+
+**핵심 패턴:**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        ORCHESTRATOR                                   │
+│  Task Router │ State Manager │ Event Bus │ Circuit Breaker           │
+└────────────────────────────────┬────────────────────────────────────┘
+                                 │
+         ┌───────────┬───────────┼───────────┬───────────┐
+         ▼           ▼           ▼           ▼           ▼
+   ┌──────────┐┌──────────┐┌──────────┐┌──────────┐┌──────────┐
+   │  PARSER  ││   SYNC   ││ STORAGE  ││  QUERY   ││  EXPORT  │
+   │  Agent   ││  Agent   ││  Agent   ││  Agent   ││  Agent   │
+   │ ──────── ││ ──────── ││ ──────── ││ ──────── ││ ──────── │
+   │ 25 files ││ 30 files ││ 35 files ││ 25 files ││ 15 files │
+   │ 40K tok  ││ 50K tok  ││ 55K tok  ││ 40K tok  ││ 30K tok  │
+   └──────────┘└──────────┘└──────────┘└──────────┘└──────────┘
+```
+
+> **상세**: [05_AGENT_SYSTEM.md](./05_AGENT_SYSTEM.md) | **PRD**: [PRD_BLOCK_AGENT_SYSTEM.md](../PRD_BLOCK_AGENT_SYSTEM.md)
 
 ---
 
 ## 6. 참조 문서
 
-| 문서 | 경로 |
-|------|------|
-| PRD v5.1 | [../PRD.md](../PRD.md) |
-| NAS 폴더 구조 | [../NAS_FOLDER_STRUCTURE.md](../NAS_FOLDER_STRUCTURE.md) |
-| Google Sheets 분석 | [../GOOGLE_SHEETS_ANALYSIS.md](../GOOGLE_SHEETS_ANALYSIS.md) |
+| 문서 | 경로 | 용도 |
+|------|------|------|
+| PRD v5.1 | [../PRD.md](../PRD.md) | 기존 시스템 요구사항 |
+| Block Agent PRD | [../PRD_BLOCK_AGENT_SYSTEM.md](../PRD_BLOCK_AGENT_SYSTEM.md) | Agent System 요구사항 |
+| Agent Architecture | [../architecture/BLOCK_AGENT_SYSTEM.md](../architecture/BLOCK_AGENT_SYSTEM.md) | 아키텍처 설계 |
+| NAS 폴더 구조 | [../NAS_FOLDER_STRUCTURE.md](../NAS_FOLDER_STRUCTURE.md) | 데이터 소스 구조 |
+| Google Sheets 분석 | [../GOOGLE_SHEETS_ANALYSIS.md](../GOOGLE_SHEETS_ANALYSIS.md) | 데이터 소스 분석 |
 
 ---
 
-**문서 버전**: 1.1.0
+**문서 버전**: 1.2.0
 **작성일**: 2025-12-09
 **수정일**: 2025-12-09
-**상태**: Updated - Style/Documentation fixes
+**상태**: Updated - Block Agent System 추가
 
 ### 변경 이력
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|----------|
+| 1.2.0 | 2025-12-09 | Block Agent System 섹션 추가, 문서 참조 연결 완성 |
 | 1.1.0 | 2025-12-09 | #14 제목 형식 일관성, #15 Tag Category 개수 수정 (6→5) |
 | 1.0.0 | 2025-12-09 | 초기 버전 |
