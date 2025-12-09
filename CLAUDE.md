@@ -1,60 +1,150 @@
-# CLAUDE.md - db_architecture
+# CLAUDE.md
 
-**버전**: 1.2.0 | **Context**: Windows, PowerShell
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+**버전**: 1.3.0 | **Context**: Windows, PowerShell
 
 ---
 
 ## 프로젝트 개요
 
-GGP Poker Video Catalog 프로젝트의 데이터베이스 설계 문서입니다.
+GGP Poker Video Catalog: NAS(19TB, 1,856 파일)와 Google Sheets를 PostgreSQL에 동기화하는 비디오 카탈로그 시스템.
 
 ```
 db_architecture/
-├── backend/              # FastAPI 백엔드
-│   ├── src/              # 소스 코드
-│   ├── tests/            # 테스트
-│   └── docker/           # Docker 설정
-├── docs/
-│   ├── lld/              # Low-Level Design 문서
-│   │   ├── LLD_INDEX.md
-│   │   ├── 01_DATABASE_SCHEMA.md
-│   │   ├── 02_SYNC_SYSTEM.md
-│   │   ├── 03_FILE_PARSER.md
-│   │   ├── 04_DOCKER_DEPLOYMENT.md
-│   │   ├── 05_AGENT_SYSTEM.md
-│   │   ├── 06_BACKEND_API.md
-│   │   └── 07_CATALOG_SYSTEM.md
-│   ├── PRD.md
-│   └── PRD_BLOCK_AGENT_SYSTEM.md
-└── CLAUDE.md
+├── backend/              # FastAPI 백엔드 (Python 3.11)
+│   ├── src/              # 소스 코드 (main.py, api/, services/, models/)
+│   ├── tests/            # pytest 테스트
+│   └── docker/           # Docker Compose 설정
+├── frontend/             # React 대시보드 (Vite + TypeScript)
+│   └── src/              # 컴포넌트, 페이지
+├── src/agents/           # Block Agent System (Python)
+│   ├── core/             # BaseAgent, Registry, EventBus
+│   ├── blocks/           # Parser, Sync, Storage, Query, Export
+│   └── orchestrator/     # 워크플로우 실행기
+└── docs/lld/             # Low-Level Design 문서
 ```
+
+---
+
+## 개발 명령어
+
+### Docker (Production)
+
+```powershell
+# 전체 스택 시작 (DB + API + Frontend)
+cd D:\AI\claude01\db_architecture\backend\docker
+docker-compose up -d
+
+# 로그 확인
+docker logs pokervod-api -f
+docker logs pokervod-db -f
+
+# 컨테이너 상태
+docker ps --filter "name=pokervod"
+```
+
+### Docker (Development with Hot Reload)
+
+```powershell
+cd D:\AI\claude01\db_architecture\backend\docker
+docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+```
+
+### Backend 테스트
+
+```powershell
+cd D:\AI\claude01\db_architecture\backend
+
+# 전체 테스트 (SQLite in-memory, DB 연결 불필요)
+pytest tests/ -v
+
+# 단일 파일 테스트
+pytest tests/api/test_projects.py -v
+
+# 커버리지
+pytest tests/ --cov=src --cov-report=term-missing
+```
+
+### Frontend 개발
+
+```powershell
+cd D:\AI\claude01\db_architecture\frontend
+
+npm run dev      # Vite dev server (localhost:5173)
+npm run build    # Production 빌드
+npm run lint     # ESLint
+```
+
+### Agent System 테스트
+
+```powershell
+cd D:\AI\claude01\db_architecture
+
+pytest tests/agents/ -v
+pytest tests/agents/test_parser_agent.py -v
+```
+
+---
+
+## 서비스 URL
+
+| 서비스 | URL | 비고 |
+|--------|-----|------|
+| Dashboard | http://localhost:8080 | Nginx (Production) |
+| API Docs | http://localhost:9000/docs | Swagger UI |
+| WebSocket | ws://localhost:8080/ws/sync | 실시간 동기화 |
+| Frontend Dev | http://localhost:5173 | Vite (Development) |
 
 ---
 
 ## 핵심 규칙
 
-| 규칙 | 내용 |
-|------|------|
-| **언어** | 한글 출력. 기술 용어(code, GitHub)는 영어 |
-| **경로** | 절대 경로만. `D:\AI\claude01\db_architecture\...` |
-| **문서 충돌** | 충돌 시 사용자에게 질문 (임의 판단 금지) |
+> **전역 규칙 적용**: [상위 CLAUDE.md](../CLAUDE.md) 참조
+>
+> 추가 규칙: 절대 경로 `D:\AI\claude01\db_architecture\...` 사용
 
 ---
 
-## 아키텍처 결정 사항
+## 아키텍처
+
+### 시스템 구조
+
+```
+User → :8080 (nginx) → /api/* → :8000 (FastAPI) → :5432 (PostgreSQL)
+                     → /ws/*  → WebSocket
+                     → /*     → React SPA
+
+NAS (Z:\GGPNAs\ARCHIVE) ─┐
+                         ├→ Sync Worker → PostgreSQL (pokervod)
+Google Sheets ───────────┘
+```
+
+### 데이터 계층 (Hierarchical)
+
+```
+Project → Season → Event → Episode → VideoFile
+  (7개)    (연도)   (대회)   (영상)    (파일)
+                              ↓
+                          HandClip ←→ Player, Tag
+```
+
+### 주요 프로젝트 코드
+
+| Code | 설명 | 파일명 패턴 예시 |
+|------|------|-----------------|
+| WSOP | World Series of Poker | `10-wsop-2024-be-ev-21-25k-nlh-hr-ft-title.mp4` |
+| HCL | Hustler Casino Live | (준비중) |
+| GGMILLIONS | GGPoker Millions | `250507_Super High Roller...mp4` |
+| GOG | Game of Gold | `E01_GOG_final_edit_20231215.mp4` |
+| PAD | Poker After Dark | `PAD S12 E01.mp4` |
+| MPP | MSPT, WPT, HPT 등 | `$1M GTD $1K Mystery Bounty.mp4` |
 
 ### Block Agent System 도입 기준
 
-> **중요**: Block Agent System은 **코드베이스가 50개+ 파일, 20K+ 라인 도달 시** 재검토
+> **중요**: 코드베이스가 **50개+ 파일, 20K+ 라인** 도달 시 재검토
 >
-> 현재 상태 (~20개 파일, ~5K 라인)에서는 **단순 모놀리식 구조**가 더 효율적.
-> 복잡한 오케스트레이션 없이도 NAS 동기화가 잘 동작 중.
-
-### 카탈로그 UI 방향
-
-- **플랫 리스트**: Netflix 스타일 썸네일 + 제목 리스트
-- **자동 정제 제목**: 파일명에서 가독성 있는 제목 자동 생성
-- **필터/검색**: 프로젝트, 연도, 게임타입으로 필터링
+> 현재 (~20개 파일, ~5K 라인): **단순 모놀리식 구조**가 효율적
 
 ---
 
@@ -189,7 +279,7 @@ tests/agents/test_parser_agent.py         (수정됨)
 
 ---
 
-**문서 버전**: 1.2.0
+**문서 버전**: 1.3.0
 **작성일**: 2025-12-09
 **수정일**: 2025-12-10
 
@@ -197,6 +287,7 @@ tests/agents/test_parser_agent.py         (수정됨)
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|----------|
+| 1.3.0 | 2025-12-10 | 개발 명령어 섹션 추가, 아키텍처 다이어그램 추가, 프로젝트 코드 테이블 추가 |
 | 1.2.0 | 2025-12-10 | 다음 세션 시작점 섹션 추가, Issue #23 완료 반영, API 포트 9000 변경 |
 | 1.1.0 | 2025-12-09 | Block Agent 도입 기준 추가, 현재 구현 상태 섹션 추가, 카탈로그 UI 방향 추가 |
 | 1.0.0 | 2025-12-09 | 초기 버전 |
