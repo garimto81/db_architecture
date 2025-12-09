@@ -8,6 +8,7 @@ import { useSyncStore } from '../../store';
 
 const navigation = [
   { name: 'Dashboard', path: '/' },
+  { name: 'Catalog', path: '/catalog' },
   { name: 'Sync', path: '/sync' },
   { name: 'Logs', path: '/logs' },
 ];

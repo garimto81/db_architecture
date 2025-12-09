@@ -6,3 +6,4 @@
 export * from './sync';
 export * from './dashboard';
 export * from './api';
+export * from './catalog';

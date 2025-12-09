@@ -6,3 +6,4 @@
 export { Dashboard } from './Dashboard';
 export { Sync } from './Sync';
 export { Logs } from './Logs';
+export { Catalog } from './Catalog';
