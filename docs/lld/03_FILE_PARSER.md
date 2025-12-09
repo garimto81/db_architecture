@@ -1,6 +1,6 @@
 # LLD 03: File Parser Design
 
-> **버전**: 1.1.0 | **기준 PRD**: v5.1 | **작성일**: 2025-12-09 | **수정일**: 2025-12-09
+> **버전**: 1.2.0 | **기준 PRD**: v5.1 | **작성일**: 2025-12-09 | **수정일**: 2025-12-09
 
 ---
 
@@ -274,7 +274,79 @@ class PADParser(BaseParser):
 
 ---
 
-### 2.6 MPP Parser
+### 2.6 HCL Parser (신규)
+
+**패턴**: `HCL {연도} Episode {번호} Part {번호}.mp4` 또는 `Hustler Casino Live {연도}.mp4`
+
+> **참고**: Hustler Casino Live 스트리밍 포커 쇼. 에피소드/파트 구조.
+
+```python
+class HCLParser(BaseParser):
+    """
+    Hustler Casino Live 파일명 파서
+
+    지원 패턴:
+    - HCL 2024 Episode 15 Part 2.mp4
+    - Hustler Casino Live 2023 Poker Game.mp4
+    - HCL Season 3 Episode 10.mp4
+    - HCL_2024_BigGame_Part1.mp4
+    - HCL_2024-03-15_High_Stakes.mp4 (날짜 형식)
+    """
+
+    PATTERNS = [
+        # 정규 형식: HCL 연도 Episode 번호 Part 번호.ext
+        re.compile(
+            r'^(?:HCL|Hustler\s*Casino\s*Live)\s*'
+            r'(?P<year>\d{4})?\s*'
+            r'(?:Season\s*(?P<season>\d+))?\s*'
+            r'(?:Ep(?:isode)?\s*(?P<episode>\d+))?\s*'
+            r'(?P<event_name>[^-_.]+?)?\s*'
+            r'(?:Part\s*(?P<part>\d+))?\.(mp4|mov|mxf)$',
+            re.IGNORECASE
+        ),
+        # 날짜 형식: HCL_YYYY-MM-DD_제목.ext
+        re.compile(
+            r'^HCL[_\s]+(\d{4})-(\d{2})-(\d{2})[_\s]+(.+)\.(mp4|mov|mxf)$',
+            re.IGNORECASE
+        ),
+    ]
+
+    def parse(self, filename: str) -> ParsedFile:
+        for idx, pattern in enumerate(self.PATTERNS):
+            match = pattern.match(filename)
+            if match:
+                return self._extract(match, idx)
+        return None
+
+    def _extract(self, match, pattern_idx: int) -> ParsedFile:
+        if pattern_idx == 0:  # 정규 형식
+            groups = match.groupdict()
+            return ParsedFile(
+                year=int(groups['year']) if groups.get('year') else None,
+                season_number=int(groups['season']) if groups.get('season') else None,
+                episode_number=int(groups['episode']) if groups.get('episode') else None,
+                event_name=groups.get('event_name', '').strip() if groups.get('event_name') else None,
+                part=int(groups['part']) if groups.get('part') else None,
+                event_type='live_stream',
+            )
+        else:  # 날짜 형식
+            return ParsedFile(
+                date=datetime(int(match.group(1)), int(match.group(2)), int(match.group(3))),
+                event_name=match.group(4).replace('_', ' '),
+                event_type='live_stream',
+            )
+```
+
+**예시**:
+| 파일명 | 추출 결과 |
+|--------|----------|
+| `HCL 2024 Episode 15 Part 2.mp4` | year=2024, episode=15, part=2 |
+| `Hustler Casino Live 2023 High Stakes.mp4` | year=2023, event_name="High Stakes" |
+| `HCL_2024-03-15_Phil_Ivey.mp4` | date=2024-03-15, event_name="Phil Ivey" |
+
+---
+
+### 2.7 MPP Parser
 
 **패턴**: `${GTD} GTD ${바이인} {이벤트타입}.mp4`
 
@@ -411,7 +483,140 @@ def test_parsers(filename, expected):
 
 ---
 
-## 7. 참조
+## 7. 파일 필터
+
+동기화 과정에서 비-MP4 파일, macOS 메타데이터 파일, 중복 파일을 식별하여 DB에 마킹합니다.
+
+### 7.1 FileFilter 클래스
+
+```python
+@dataclass
+class FilterResult:
+    """파일 필터 결과"""
+    file_path: str
+    is_hidden: bool = False
+    hidden_reason: Optional[str] = None
+
+class FileFilter:
+    """
+    동기화 전 파일 필터링.
+    삭제하지 않고 DB에 숨김 상태로 마킹.
+    """
+
+    # 허용 확장자 (mp4만)
+    ALLOWED_EXTENSIONS = {'.mp4'}
+
+    # 제외 패턴 (macOS 메타데이터)
+    EXCLUDE_PATTERNS = [
+        re.compile(r'^\._'),           # macOS resource fork
+        re.compile(r'^\.DS_Store$'),   # macOS folder metadata
+        re.compile(r'^Thumbs\.db$'),   # Windows thumbnail cache
+    ]
+
+    def check_file(self, file_path: str) -> FilterResult:
+        """파일 필터링 체크"""
+        filename = Path(file_path).name
+        ext = Path(file_path).suffix.lower()
+
+        # macOS 메타데이터 체크
+        for pattern in self.EXCLUDE_PATTERNS:
+            if pattern.match(filename):
+                return FilterResult(file_path, True, 'macos_meta')
+
+        # 확장자 체크
+        if ext not in self.ALLOWED_EXTENSIONS:
+            return FilterResult(file_path, True, 'non_mp4')
+
+        return FilterResult(file_path, False, None)
+```
+
+### 7.2 숨김 사유 (hidden_reason)
+
+| 값 | 설명 | 예시 |
+|----|------|------|
+| `macos_meta` | macOS 리소스 포크, 메타데이터 | `._video.mp4`, `.DS_Store` |
+| `non_mp4` | MP4 외 확장자 | `.mxf`, `.mov`, `.avi`, `.mkv` |
+| `duplicate` | 중복 파일 (동일 크기 + 유사 이름) | 백업 복사본 |
+
+### 7.3 DB 스키마
+
+```sql
+-- video_files 테이블 필터링 컬럼
+ALTER TABLE pokervod.video_files
+ADD COLUMN IF NOT EXISTS is_hidden BOOLEAN DEFAULT false;
+
+ALTER TABLE pokervod.video_files
+ADD COLUMN IF NOT EXISTS hidden_reason VARCHAR(50);
+
+-- 활성 파일 조회 최적화 인덱스
+CREATE INDEX IF NOT EXISTS idx_video_files_hidden
+ON pokervod.video_files(is_hidden)
+WHERE is_hidden = false;
+```
+
+### 7.4 중복 탐지 (pg_trgm)
+
+동일 파일 크기 + 파일명 유사도 80% 이상을 중복으로 판단:
+
+```sql
+-- pg_trgm 확장 설치
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- 중복 파일 마킹 쿼리
+WITH duplicates AS (
+    SELECT
+        v1.id,
+        v1.file_name,
+        v2.file_name as original_name,
+        similarity(v1.file_name, v2.file_name) as sim
+    FROM pokervod.video_files v1
+    JOIN pokervod.video_files v2
+        ON v1.file_size_bytes = v2.file_size_bytes
+        AND v1.id > v2.id
+    WHERE similarity(v1.file_name, v2.file_name) > 0.8
+)
+UPDATE pokervod.video_files
+SET is_hidden = true, hidden_reason = 'duplicate'
+WHERE id IN (SELECT id FROM duplicates);
+```
+
+### 7.5 통합 흐름
+
+```
+NAS 파일 스캔
+    ↓
+FileFilter.check_file()
+    ↓
+┌─────────────────────────┐
+│ is_hidden=true?         │
+│   → episode_id = NULL   │
+│   → 카탈로그 제외       │
+│                         │
+│ is_hidden=false?        │
+│   → 정상 처리           │
+│   → 에피소드 연결       │
+└─────────────────────────┘
+    ↓
+DB 저장 (모든 파일 추적)
+```
+
+### 7.6 카탈로그 조회 (숨김 파일 제외)
+
+```sql
+-- 활성 비디오 파일만 조회
+SELECT * FROM pokervod.video_files
+WHERE is_hidden = false;
+
+-- 숨김 파일 통계
+SELECT hidden_reason, COUNT(*)
+FROM pokervod.video_files
+WHERE is_hidden = true
+GROUP BY hidden_reason;
+```
+
+---
+
+## 8. 참조
 
 | 문서 | 설명 |
 |------|------|
@@ -420,14 +625,15 @@ def test_parsers(filename, expected):
 
 ---
 
-**문서 버전**: 1.1.0
+**문서 버전**: 1.2.0
 **작성일**: 2025-12-09
 **수정일**: 2025-12-09
-**상태**: Updated - Regex patterns improved
+**상태**: Updated - File filter added
 
 ### 변경 이력
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|----------|
+| 1.2.0 | 2025-12-09 | 파일 필터 섹션 추가 - macOS 메타파일, 비-MP4, 중복 파일 마킹 |
 | 1.1.0 | 2025-12-09 | #9 GGMillions/PAD/GOG 파서 정규식 개선 - 다중 패턴 지원, IGNORECASE, 유연한 구분자 |
 | 1.0.0 | 2025-12-09 | 초기 버전 |

@@ -1,6 +1,6 @@
 # LLD: Block Agent System
 
-> **버전**: 1.0.0 | **기준 PRD**: PRD_BLOCK_AGENT_SYSTEM v1.0.0 | **작성일**: 2025-12-09
+> **버전**: 1.1.0 | **기준 PRD**: PRD_BLOCK_AGENT_SYSTEM v1.1.0 | **작성일**: 2025-12-09
 
 ---
 
@@ -314,6 +314,133 @@ RECORD_SCHEMAS = {
 
 ---
 
+### 3.7 FrontendAgent (`frontend/.block_rules`)
+
+GUI 모니터링 대시보드를 담당하는 특수 에이전트입니다. 다른 에이전트와 달리 Python이 아닌 TypeScript/React 기반입니다.
+
+**에이전트 특성**:
+
+| 항목 | 값 |
+|------|-----|
+| 블럭 ID | BLOCK_FRONTEND |
+| 언어 | TypeScript (React) |
+| 파일 수 한도 | 40개 |
+| 토큰 한도 | 45K |
+| 통신 방식 | REST API, WebSocket |
+
+**블럭 규칙 (.block_rules)**:
+
+```yaml
+# frontend/.block_rules
+block_id: BLOCK_FRONTEND
+agent: FrontendAgent
+language: typescript
+
+scope:
+  allowed_paths:
+    - "frontend/**"
+    - "frontend/src/**/*.tsx"
+    - "frontend/src/**/*.ts"
+    - "frontend/src/**/*.css"
+  forbidden_paths:
+    - "backend/**"
+    - "blocks/**"
+    - "src/agents/**"
+    - "*.py"
+    - "*.sql"
+    - "docker/**"
+
+limits:
+  max_files: 40
+  max_tokens: 45000
+
+dependencies:
+  - BLOCK_SYNC          # 동기화 이벤트 구독 (WebSocket 통해)
+
+communication:
+  allowed:
+    - protocol: http
+      target: "backend/api/*"
+    - protocol: websocket
+      target: "backend/ws/*"
+  forbidden:
+    - protocol: direct
+      target: "database"
+    - protocol: import
+      target: "python_modules"
+
+capabilities:
+  - render_dashboard      # 대시보드 UI 렌더링
+  - handle_websocket      # WebSocket 이벤트 처리
+  - update_sync_status    # 동기화 상태 UI 업데이트
+  - show_notification     # 알림 토스트 표시
+  - fetch_stats           # REST API로 통계 조회
+  - trigger_sync          # 수동 동기화 트리거
+```
+
+**격리 원칙**:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    FrontendAgent 격리 경계                           │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ✅ 허용:                                                            │
+│  ┌──────────────┐                   ┌──────────────┐                │
+│  │  Frontend    │ ═══ HTTP/WS ════▶ │  Backend API │                │
+│  │  (React)     │                   │  (FastAPI)   │                │
+│  └──────────────┘                   └──────────────┘                │
+│                                                                      │
+│  ❌ 금지:                                                            │
+│  ┌──────────────┐                   ┌──────────────┐                │
+│  │  Frontend    │ ─── ✗ ──────────▶│ PostgreSQL   │  직접 DB 접근  │
+│  │  (React)     │ ─── ✗ ──────────▶│ Python 코드  │  import 금지   │
+│  │              │ ─── ✗ ──────────▶│ 다른 블럭    │  경로 접근 금지│
+│  └──────────────┘                   └──────────────┘                │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Capabilities 상세**:
+
+| 액션 | 입력 | 출력 | 설명 |
+|------|------|------|------|
+| render_dashboard | - | JSX | 대시보드 메인 화면 렌더링 |
+| handle_websocket | WsMessage | void | WebSocket 이벤트 수신 및 스토어 업데이트 |
+| update_sync_status | SyncStatus | void | NAS/Sheets 동기화 상태 카드 업데이트 |
+| show_notification | Notification | void | 성공/에러 알림 토스트 표시 |
+| fetch_stats | - | DashboardStats | `/api/dashboard/stats` 호출 |
+| trigger_sync | 'nas' \| 'sheets' | void | `/api/sync/trigger/{source}` POST |
+
+**폴더 구조**:
+
+```
+frontend/
+├── .block_rules               # 에이전트 제약조건
+├── src/
+│   ├── components/
+│   │   ├── dashboard/         # DashboardStats, QuickActions
+│   │   ├── sync/              # SyncStatusCard, SyncProgress
+│   │   └── common/            # Card, Badge, Button
+│   ├── hooks/
+│   │   ├── useWebSocket.ts    # WebSocket 연결 관리
+│   │   └── useSyncStatus.ts   # 동기화 상태 조회
+│   ├── store/
+│   │   ├── syncStore.ts       # Zustand - 동기화 상태
+│   │   └── dashboardStore.ts  # Zustand - 대시보드 통계
+│   ├── services/
+│   │   ├── api.ts             # Axios 인스턴스
+│   │   └── syncApi.ts         # 동기화 API 클라이언트
+│   └── types/
+│       ├── sync.ts            # SyncStatus, WsMessage
+│       └── dashboard.ts       # DashboardStats
+└── tests/
+```
+
+> **상세 설계**: [08_FRONTEND_MONITORING.md](./08_FRONTEND_MONITORING.md)
+
+---
+
 ## 4. Orchestrator 상세
 
 ### 4.1 OrchestratorAgent (`src/agents/orchestrator/orchestrator_agent.py`)
@@ -457,10 +584,11 @@ pytest tests/agents/ --cov=src/agents --cov-report=term
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|----------|
+| 1.1.0 | 2025-12-09 | FrontendAgent 섹션 추가 (3.7), .block_rules 상세 정의, 격리 원칙 명시 |
 | 1.0.0 | 2025-12-09 | 초기 버전 |
 
 ---
 
-**문서 버전**: 1.0.0
+**문서 버전**: 1.1.0
 **작성일**: 2025-12-09
-**상태**: Initial
+**상태**: Updated

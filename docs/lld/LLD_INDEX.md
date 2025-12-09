@@ -1,6 +1,6 @@
 # LLD: GGP Poker Video Catalog DB
 
-> **버전**: 1.2.0 | **기준 PRD**: v5.1 | **작성일**: 2025-12-09 | **수정일**: 2025-12-09
+> **버전**: 1.6.0 | **기준 PRD**: v5.1 | **작성일**: 2025-12-09 | **수정일**: 2025-12-09
 
 ---
 
@@ -17,7 +17,10 @@ docs/lld/
 ├── 02_SYNC_SYSTEM.md      # 동기화 시스템 상세 설계
 ├── 03_FILE_PARSER.md      # 파일명 파서 상세 설계
 ├── 04_DOCKER_DEPLOYMENT.md # Docker 배포 상세 설계
-└── 05_AGENT_SYSTEM.md     # Block Agent System 상세 설계 (NEW)
+├── 05_AGENT_SYSTEM.md     # Block Agent System 상세 설계
+├── 06_BACKEND_API.md      # Backend REST API 상세 설계
+├── 07_CATALOG_SYSTEM.md   # Catalog & Title System 설계
+└── 08_FRONTEND_MONITORING.md # Frontend Monitoring Dashboard (NEW)
 ```
 
 ### 1.2 시스템 아키텍처 개요
@@ -144,30 +147,33 @@ class ParserFactory:
 
 ### 2.4 Docker 배포 ([상세](./04_DOCKER_DEPLOYMENT.md))
 
-**컨테이너 구성**:
+**컨테이너 구성 (v2.0 Full-Stack)**:
 | 컨테이너 | 이미지 | 포트 | 역할 |
 |----------|--------|------|------|
-| pokervod-db | postgres:15-alpine | 5432 | 메인 DB |
-| pokervod-redis | redis:7-alpine | 6379 | 작업 큐 |
-| pokervod-sync | python:3.11-slim | - | 동기화 워커 |
+| pokervod-db | postgres:15-alpine | 5432 (local) | 메인 DB |
+| pokervod-api | python:3.11-slim | 8000 (local) | FastAPI Backend |
+| pokervod-frontend | nginx:alpine | 8080 | React SPA + API Proxy |
+
+**아키텍처**:
+```
+User → :8080 (frontend/nginx) → /api/* → :8000 (api) → :5432 (db)
+                              → /ws/*  → WebSocket (api)
+                              → /*     → React SPA
+```
 
 **볼륨 마운트**:
 ```
 postgres_data → /var/lib/postgresql/data
-redis_data → /data
-/mnt/nas → /nas:ro (SMB 마운트)
-./config → /app/config:ro
+/z/GGPNAs/ARCHIVE → /nas/ARCHIVE:ro (NAS)
 ./logs → /app/logs
 ```
 
-**환경 변수**:
-| 변수 | 기본값 | 설명 |
-|------|--------|------|
-| DB_USER | pokervod | DB 사용자 |
-| DB_PASSWORD | (필수) | DB 비밀번호 |
-| SYNC_INTERVAL_HOURS | 1 | 동기화 주기 (시간) |
-| NAS_MOUNT_PATH | /nas | NAS 마운트 경로 |
-| SPREADSHEET_ID | (필수) | Google Sheet ID |
+**접속 URL**:
+| 서비스 | URL |
+|--------|-----|
+| Dashboard | http://localhost:8080 |
+| API Docs | http://localhost:8080/api/docs |
+| WebSocket | ws://localhost:8080/ws/sync |
 
 ---
 
@@ -248,10 +254,38 @@ Google Sheets                Sync Worker                     PostgreSQL
 | [03_FILE_PARSER.md](./03_FILE_PARSER.md) | 파일명 파서 | 7개 프로젝트 파서, 정규식, 테스트 케이스 |
 | [04_DOCKER_DEPLOYMENT.md](./04_DOCKER_DEPLOYMENT.md) | Docker 배포 | compose 설정, 볼륨, 운영 명령어 |
 | [05_AGENT_SYSTEM.md](./05_AGENT_SYSTEM.md) | Block Agent System | 에이전트 아키텍처, 워크플로우, 구현 |
+| [06_BACKEND_API.md](./06_BACKEND_API.md) | Backend REST API | FastAPI, 라우터, 서비스, 스키마 |
+| [07_CATALOG_SYSTEM.md](./07_CATALOG_SYSTEM.md) | Catalog & Title System | 카탈로그 구조, 제목 생성, UI 목업 |
+| [08_FRONTEND_MONITORING.md](./08_FRONTEND_MONITORING.md) | Frontend Monitoring | React 대시보드, WebSocket, 동기화 모니터링 |
 
 ---
 
-### 5.1 Block Agent System 요약 (신규)
+### 5.1 Backend API 요약 (신규)
+
+FastAPI 기반 REST API 백엔드 설계입니다.
+
+**API 엔드포인트 (11개):**
+
+| 영역 | 엔드포인트 수 | 설명 |
+|------|-------------|------|
+| Projects | 3 | 목록, 상세, 통계 |
+| Seasons | 1 | 목록 (필터링) |
+| Events | 3 | 목록, 상세, 에피소드 |
+| Episodes | 1 | 비디오 파일 목록 |
+| Health | 3 | DB 상태, 테이블, 연결 |
+
+**계층 구조:**
+```
+API Routers → Services → Models → PostgreSQL
+     ↓
+Pydantic Schemas (Request/Response DTO)
+```
+
+> **상세**: [06_BACKEND_API.md](./06_BACKEND_API.md)
+
+---
+
+### 5.2 Block Agent System 요약
 
 Block Agent System은 AI 기반 개발의 컨텍스트 격리 및 모듈화를 위한 아키텍처입니다.
 
@@ -287,6 +321,89 @@ Block Agent System은 AI 기반 개발의 컨텍스트 격리 및 모듈화를 �
 
 ---
 
+### 5.3 Catalog & Title System 요약 (신규)
+
+넷플릭스 스타일의 카탈로그 시스템으로, 영상 유형에 따른 2가지 구조를 지원합니다.
+
+**영상 유형별 카탈로그 구조:**
+
+| 유형 | 카탈로그 형식 | 제목 형식 |
+|------|--------------|----------|
+| Full Episode | [대회명] [연도] [이벤트명] | [날짜/세션] |
+| Hand Clip | [대회명] [연도] [이벤트명] [날짜] | [플레이어 vs 플레이어] |
+
+**UI 목업:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 📂 WSOP 2024 Main Event                        [8 videos]  │
+│    ├── Day 1A                                               │
+│    ├── Day 1B                                               │
+│    └── Final Table                                          │
+├─────────────────────────────────────────────────────────────┤
+│ 📂 WSOP 2024 Main Event Day 3                 [24 clips]   │
+│    ├── Ding vs Boianovsky          [추후 구현]              │
+│    └── Aziz vs YINAN               [추후 구현]              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**신규 DB 컬럼:**
+
+| 컬럼 | 용도 |
+|------|------|
+| `content_type` | 콘텐츠 유형 (full_episode, hand_clip) |
+| `catalog_title` | 카탈로그 그룹명 |
+| `episode_title` | 개별 제목 |
+| `ai_description` | AI 추론 설명 [추후 구현] |
+| `is_catalog_item` | 대표 파일 여부 |
+
+> **상세**: [07_CATALOG_SYSTEM.md](./07_CATALOG_SYSTEM.md)
+
+---
+
+### 5.4 Frontend Monitoring Dashboard 요약 (신규)
+
+NAS와 Google Sheets 동기화 상태를 실시간 모니터링하는 React 기반 대시보드입니다.
+
+**기술 스택:**
+
+| 계층 | 기술 | 설명 |
+|------|------|------|
+| Framework | React 18 + TypeScript | SPA 구현 |
+| Build | Vite | 빠른 HMR |
+| UI | shadcn/ui + Tailwind | 컴포넌트 라이브러리 |
+| State | Zustand | 경량 상태 관리 |
+| Real-time | WebSocket | 실시간 동기화 이벤트 |
+| Data Fetching | TanStack Query | 서버 상태 관리 |
+
+**핵심 기능:**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  📊 Dashboard                                                        │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐           │
+│  │ 📁 NAS   │  │ 📋 Sheets │  │ 통계     │  │ 로그     │           │
+│  │ Sync     │  │ Sync      │  │ Overview │  │ Viewer   │           │
+│  │ Status   │  │ Status    │  │          │  │          │           │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘           │
+│                                                                      │
+│  [🔄 NAS 동기화]  [🔄 Sheets 동기화]    실시간 WebSocket 연결: ● 연결됨 │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**담당 블럭:**
+
+| 블럭 | 책임 | 파일 수 |
+|------|------|---------|
+| **BLOCK_FRONTEND** | GUI 대시보드 렌더링, 실시간 데이터 표시 | 40개 |
+
+> **상세**: [08_FRONTEND_MONITORING.md](./08_FRONTEND_MONITORING.md)
+
+---
+
 ## 6. 참조 문서
 
 | 문서 | 경로 | 용도 |
@@ -299,15 +416,19 @@ Block Agent System은 AI 기반 개발의 컨텍스트 격리 및 모듈화를 �
 
 ---
 
-**문서 버전**: 1.2.0
+**문서 버전**: 1.6.0
 **작성일**: 2025-12-09
 **수정일**: 2025-12-09
-**상태**: Updated - Block Agent System 추가
+**상태**: Updated - Docker Full-Stack 배포 완료
 
 ### 변경 이력
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|----------|
+| 1.6.0 | 2025-12-09 | Docker 배포 v2.0: Full-Stack (Frontend + Backend + DB) 구성 |
+| 1.5.0 | 2025-12-09 | Frontend Monitoring LLD (08_FRONTEND_MONITORING.md) 추가, BLOCK_FRONTEND 정의 |
+| 1.4.0 | 2025-12-09 | Catalog & Title System LLD (07_CATALOG_SYSTEM.md) 추가, UI 목업 포함 |
+| 1.3.0 | 2025-12-09 | Backend API LLD (06_BACKEND_API.md) 추가, 섹션 5.1/5.2 재구성 |
 | 1.2.0 | 2025-12-09 | Block Agent System 섹션 추가, 문서 참조 연결 완성 |
 | 1.1.0 | 2025-12-09 | #14 제목 형식 일관성, #15 Tag Category 개수 수정 (6→5) |
 | 1.0.0 | 2025-12-09 | 초기 버전 |
