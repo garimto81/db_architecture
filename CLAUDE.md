@@ -1,6 +1,6 @@
 # CLAUDE.md - db_architecture
 
-**버전**: 1.1.0 | **Context**: Windows, PowerShell
+**버전**: 1.2.0 | **Context**: Windows, PowerShell
 
 ---
 
@@ -22,7 +22,8 @@ db_architecture/
 │   │   ├── 03_FILE_PARSER.md
 │   │   ├── 04_DOCKER_DEPLOYMENT.md
 │   │   ├── 05_AGENT_SYSTEM.md
-│   │   └── 06_BACKEND_API.md
+│   │   ├── 06_BACKEND_API.md
+│   │   └── 07_CATALOG_SYSTEM.md
 │   ├── PRD.md
 │   └── PRD_BLOCK_AGENT_SYSTEM.md
 └── CLAUDE.md
@@ -123,14 +124,58 @@ gh pr create --title "fix: resolve issues #1-15" --body "Closes #1, #2, ..."
 
 | 컴포넌트 | 상태 | 비고 |
 |----------|------|------|
-| PostgreSQL 15 | ✅ 완료 | Docker (pokervod-db) |
+| PostgreSQL 15 | ✅ 완료 | Docker (pokervod-db:5432) |
 | NAS Sync | ✅ 완료 | 1,856 파일, 19TB |
 | File Parser | ✅ 완료 | 7개 프로젝트 패턴 |
-| Backend API | ✅ 완료 | FastAPI 11개 엔드포인트 |
+| Backend API | ✅ 완료 | FastAPI 14개 엔드포인트 (port 9000) |
 | 파일 필터 | ✅ 완료 | is_hidden, hidden_reason |
+| 동기화 검수 | ✅ 완료 | Issue #23 - 폴더 트리, Sheets 뷰어 |
 | Google Sheets | ⚠️ 미완 | 라이브러리만 설치 |
 | Catalog UI | ❌ 미구현 | 다음 작업 |
 | Block Agent | ❌ 미구현 | 50+ 파일 도달 시 재검토 |
+
+---
+
+## 🔄 다음 세션 시작점
+
+> **마지막 업데이트**: 2025-12-10
+
+### 현재 브랜치
+
+```
+fix/issue-23-sync-inspection (84853ff)
+```
+
+### Docker 컨테이너 상태
+
+| 서비스 | 포트 | 상태 |
+|--------|------|------|
+| pokervod-db | 5432 | ✅ healthy |
+| pokervod-api | **9000** | ✅ healthy |
+| pokervod-frontend | 3001 | ✅ healthy |
+
+### 완료된 작업
+
+- [x] Issue #23: 동기화 데이터 검수 기능
+  - `/api/sync/tree` - NAS 폴더 트리 구조
+  - `/api/sync/sheets/preview` - Google Sheets 데이터 미리보기
+  - `/api/sync/scheduler` - APScheduler 상태 조회
+  - `DataBrowser.tsx` - 폴더 트리 뷰어 컴포넌트
+  - `SheetsViewer.tsx` - Sheets 데이터 뷰어 컴포넌트
+  - `Sync.tsx` - 탭 네비게이션 (status/files/sheets)
+
+### 미커밋 변경사항
+
+```
+src/agents/blocks/parser/parser_agent.py  (수정됨)
+tests/agents/test_parser_agent.py         (수정됨)
+```
+
+### 다음 우선순위 작업
+
+1. **Catalog UI 구현** - Netflix 스타일 비디오 카탈로그
+2. **Google Sheets 동기화 완성** - 실제 연동 구현
+3. **검색 기능** - MeiliSearch 또는 PostgreSQL Full-text
 
 ---
 
@@ -144,13 +189,14 @@ gh pr create --title "fix: resolve issues #1-15" --body "Closes #1, #2, ..."
 
 ---
 
-**문서 버전**: 1.1.0
+**문서 버전**: 1.2.0
 **작성일**: 2025-12-09
-**수정일**: 2025-12-09
+**수정일**: 2025-12-10
 
 ### 변경 이력
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|----------|
+| 1.2.0 | 2025-12-10 | 다음 세션 시작점 섹션 추가, Issue #23 완료 반영, API 포트 9000 변경 |
 | 1.1.0 | 2025-12-09 | Block Agent 도입 기준 추가, 현재 구현 상태 섹션 추가, 카탈로그 UI 방향 추가 |
 | 1.0.0 | 2025-12-09 | 초기 버전 |
