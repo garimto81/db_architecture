@@ -141,15 +141,30 @@ class GoogleSheetService:
     MAX_REQUESTS_PER_MINUTE = 60
     BATCH_SIZE = 100
 
-    # Default column mapping for hand_analysis sheet
+    # Default column mapping for Metadata Archive sheet (Issue #28: 실제 시트 구조 반영)
+    # A: File No., B: File Name, C: Nas Folder Link, D: In, E: Out, F: Hand Grade,
+    # G: Winner, H: Hands, I-K: Tag (Player) 1-3, L-R: Tag (Poker Play) 1-7, S-T: Tag (Emotion) 1-2
     HAND_ANALYSIS_COLUMNS = {
-        'timecode': 0,
-        'title': 1,
-        'players': 2,
-        'tags': 3,
-        'notes': 4,
-        'hand_grade': 5,
-        'video_ref': 6,
+        'file_no': 0,           # A: File No. (클립 번호)
+        'title': 1,             # B: File Name (제목)
+        'nas_path': 2,          # C: Nas Folder Link
+        'timecode': 3,          # D: In (시작 타임코드) ★ 핵심
+        'timecode_end': 4,      # E: Out (종료 타임코드)
+        'hand_grade': 5,        # F: Hand Grade (등급)
+        'winner': 6,            # G: Winner (승자)
+        'hands': 7,             # H: Hands (핸드 조합)
+        'player_1': 8,          # I: Tag (Player) 1
+        'player_2': 9,          # J: Tag (Player) 2
+        'player_3': 10,         # K: Tag (Player) 3
+        'tag_play_1': 11,       # L: Tag (Poker Play) 1
+        'tag_play_2': 12,       # M: Tag (Poker Play) 2
+        'tag_play_3': 13,       # N: Tag (Poker Play) 3
+        'tag_play_4': 14,       # O: Tag (Poker Play) 4
+        'tag_play_5': 15,       # P: Tag (Poker Play) 5
+        'tag_play_6': 16,       # Q: Tag (Poker Play) 6
+        'tag_play_7': 17,       # R: Tag (Poker Play) 7
+        'tag_emotion_1': 18,    # S: Tag (Emotion) 1
+        'tag_emotion_2': 19,    # T: Tag (Emotion) 2
     }
 
     # Default column mapping for hand_database sheet
@@ -403,7 +418,7 @@ class GoogleSheetService:
         row_num: int,
         config: SheetConfig,
     ) -> Optional[Dict[str, Any]]:
-        """Parse a row into hand clip data"""
+        """Parse a row into hand clip data (Issue #28: 실제 시트 구조 반영)"""
         mapping = config.column_mapping
 
         def get_col(name: str) -> Optional[str]:
@@ -412,31 +427,54 @@ class GoogleSheetService:
                 return row[idx].strip() if row[idx] else None
             return None
 
+        # Issue #28: Metadata Archive 시트 구조에 맞게 매핑
         clip_data = {
             'id': uuid4(),
             'sheet_source': config.source_type,
             'sheet_row_number': row_num,
-            'timecode': get_col('timecode'),
             'title': get_col('title') or get_col('video_title'),
-            'notes': get_col('notes'),
-            'hand_grade': get_col('hand_grade'),
+            'timecode': get_col('timecode'),           # D열: In (시작 타임코드)
+            'timecode_end': get_col('timecode_end'),   # E열: Out (종료 타임코드)
+            'hand_grade': get_col('hand_grade'),       # F열: Hand Grade
+            'notes': get_col('winner'),                # G열: Winner → notes에 임시 저장
         }
 
-        # Parse tags
-        tags_str = get_col('tags')
-        if tags_str:
-            clip_data['normalized_tags'] = TagNormalizer.normalize_list(tags_str)
+        # Parse hands involved (H열)
+        hands_str = get_col('hands')
+        if hands_str:
+            clip_data['hands_involved'] = hands_str
 
-        # Parse players (comma-separated)
-        players_str = get_col('players')
-        if players_str:
-            clip_data['players'] = [p.strip() for p in players_str.split(',') if p.strip()]
+        # Parse players (I-K열: Tag (Player) 1-3)
+        players = []
+        for i in range(1, 4):
+            player = get_col(f'player_{i}')
+            if player:
+                players.append(player)
+        if players:
+            clip_data['players'] = players
 
-        # Parse pot size if available
+        # Parse poker play tags (L-R열: Tag (Poker Play) 1-7)
+        play_tags = []
+        for i in range(1, 8):
+            tag = get_col(f'tag_play_{i}')
+            if tag:
+                play_tags.append(TagNormalizer.normalize(tag))
+        if play_tags:
+            clip_data['normalized_tags'] = play_tags
+
+        # Parse emotion tags (S-T열: Tag (Emotion) 1-2)
+        emotion_tags = []
+        for i in range(1, 3):
+            tag = get_col(f'tag_emotion_{i}')
+            if tag:
+                emotion_tags.append(TagNormalizer.normalize(tag))
+        if emotion_tags:
+            clip_data['emotion_tags'] = emotion_tags
+
+        # Legacy: Parse pot size if available (hand_database용)
         pot_str = get_col('pot_size')
         if pot_str:
             try:
-                # Remove currency symbols and parse
                 pot_clean = re.sub(r'[^\d.]', '', pot_str)
                 clip_data['pot_size'] = int(float(pot_clean))
             except ValueError:
@@ -464,12 +502,13 @@ class GoogleSheetService:
         ).first()
 
         if existing:
-            # Update existing
+            # Update existing (Issue #28: timecode_end 추가)
             self.db.execute(
                 text("""
                     UPDATE pokervod.hand_clips
                     SET title = :title,
                         timecode = :timecode,
+                        timecode_end = :timecode_end,
                         notes = :notes,
                         hand_grade = :hand_grade,
                         updated_at = NOW()
@@ -479,19 +518,20 @@ class GoogleSheetService:
                     'id': existing[0],
                     'title': clip_data.get('title'),
                     'timecode': clip_data.get('timecode'),
+                    'timecode_end': clip_data.get('timecode_end'),
                     'notes': clip_data.get('notes'),
                     'hand_grade': clip_data.get('hand_grade'),
                 }
             )
             return False
         else:
-            # Insert new
+            # Insert new (Issue #28: timecode_end 추가)
             self.db.execute(
                 text("""
                     INSERT INTO pokervod.hand_clips (
-                        id, sheet_source, sheet_row_number, title, timecode, notes, hand_grade
+                        id, sheet_source, sheet_row_number, title, timecode, timecode_end, notes, hand_grade, is_active
                     ) VALUES (
-                        :id, :source, :row_num, :title, :timecode, :notes, :hand_grade
+                        :id, :source, :row_num, :title, :timecode, :timecode_end, :notes, :hand_grade, true
                     )
                 """),
                 {
@@ -500,6 +540,7 @@ class GoogleSheetService:
                     'row_num': clip_data['sheet_row_number'],
                     'title': clip_data.get('title'),
                     'timecode': clip_data.get('timecode'),
+                    'timecode_end': clip_data.get('timecode_end'),
                     'notes': clip_data.get('notes'),
                     'hand_grade': clip_data.get('hand_grade'),
                 }
