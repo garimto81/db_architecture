@@ -294,3 +294,290 @@ class TestPathNormalizationEdgeCases:
         result = NasPathNormalizer.normalize(path)
 
         assert result.startswith(r"Z:\GGPNAs\ARCHIVE")
+
+
+# ============================================
+# Issue #32: Hybrid Fuzzy Matching Tests
+# TDD Red Phase - 아래 테스트는 구현 전이므로 실패해야 함
+# ============================================
+
+class TestTitleNormalizer:
+    """TitleNormalizer 제목 정규화 테스트 (Issue #32)"""
+
+    def test_normalize_removes_subclip_suffix(self):
+        """_subclip_ 이후 텍스트 제거"""
+        from src.services.google_sheet_service import TitleNormalizer
+
+        title = "WSOP_2008_20_subclip_Johnny Chan makes flush"
+        expected = "wsop 2008 20"
+
+        result = TitleNormalizer.normalize(title)
+
+        assert result == expected
+
+    def test_normalize_removes_pgm_suffix(self):
+        """_PGM 접미사 제거"""
+        from src.services.google_sheet_service import TitleNormalizer
+
+        title = "1217_Hand_42_Aziz ThTc vs Boeree 9c7h_PGM"
+        expected = "1217 hand 42 aziz thtc vs boeree 9c7h"
+
+        result = TitleNormalizer.normalize(title)
+
+        assert result == expected
+
+    def test_normalize_removes_es_code(self):
+        """ES 코드 제거 (ES + 10자리 숫자)"""
+        from src.services.google_sheet_service import TitleNormalizer
+
+        title = "2004 WSOP Tournament of Champs_ES0400143329"
+        expected = "2004 wsop tournament of champs"
+
+        result = TitleNormalizer.normalize(title)
+
+        assert result == expected
+
+    def test_normalize_removes_file_extension(self):
+        """파일 확장자 제거"""
+        from src.services.google_sheet_service import TitleNormalizer
+
+        title = "WSOP16_GCC_P2_Final.mxf"
+        expected = "wsop16 gcc p2 final"
+
+        result = TitleNormalizer.normalize(title)
+
+        assert result == expected
+
+    def test_normalize_converts_separators_to_spaces(self):
+        """언더스코어/하이픈 → 공백 변환"""
+        from src.services.google_sheet_service import TitleNormalizer
+
+        title = "ESPN-2007_WSOP-SEASON_5-SHOW-16"
+        expected = "espn 2007 wsop season 5 show 16"
+
+        result = TitleNormalizer.normalize(title)
+
+        assert result == expected
+
+    def test_normalize_lowercase(self):
+        """소문자 변환"""
+        from src.services.google_sheet_service import TitleNormalizer
+
+        title = "WSOP MAIN EVENT FINAL TABLE"
+        expected = "wsop main event final table"
+
+        result = TitleNormalizer.normalize(title)
+
+        assert result == expected
+
+    def test_normalize_removes_gmpo_code(self):
+        """GMPO 코드 제거"""
+        from src.services.google_sheet_service import TitleNormalizer
+
+        title = "WSOP 2006 Show 3_ES0600162627_GMPO 729"
+        expected = "wsop 2006 show 3"
+
+        result = TitleNormalizer.normalize(title)
+
+        assert result == expected
+
+    def test_normalize_empty_string(self):
+        """빈 문자열 처리"""
+        from src.services.google_sheet_service import TitleNormalizer
+
+        assert TitleNormalizer.normalize("") == ""
+        assert TitleNormalizer.normalize(None) == ""
+
+    def test_normalize_real_iconik_samples(self):
+        """실제 iconik_metadata 샘플 정규화"""
+        from src.services.google_sheet_service import TitleNormalizer
+
+        samples = [
+            ("WSOP_2004_19_subclip_Greg Raymer's Aces got cracked", "wsop 2004 19"),
+            ("WS11_ME01_NB_subclip", "ws11 me01 nb"),
+            ("WSOP13_APAC_ME01_NB_subclip_daniel badbeat", "wsop13 apac me01 nb"),
+            ("WSOP15_ME04_FINAL_4CH", "wsop15 me04 final 4ch"),
+        ]
+
+        for title, expected in samples:
+            result = TitleNormalizer.normalize(title)
+            assert result == expected, f"Failed for '{title}': got '{result}'"
+
+
+class TestFuzzyMatcher:
+    """FuzzyMatcher Fuzzy 매칭 테스트 (Issue #32)"""
+
+    @pytest.fixture
+    def mock_db_session(self):
+        """Mock database session"""
+        return MagicMock()
+
+    def test_find_match_exact_similarity(self, mock_db_session):
+        """정확히 일치하는 경우 (similarity = 1.0)"""
+        from src.services.google_sheet_service import FuzzyMatcher
+
+        # Mock: pg_trgm similarity 결과
+        mock_result = MagicMock()
+        mock_result.fetchall.return_value = [
+            (uuid4(), "2009 WSOP Show 6 Ante Up For Africa.mov", 1.0)
+        ]
+        mock_db_session.execute.return_value = mock_result
+
+        matcher = FuzzyMatcher(mock_db_session)
+        clip_title = "2009 WSOP Show 6 Ante Up For Africa.mov"
+
+        result = matcher.find_best_match(clip_title)
+
+        assert result is not None
+        assert result['confidence'] >= 95
+
+    def test_find_match_high_similarity(self, mock_db_session):
+        """높은 유사도 (>=0.8) 자동 매칭"""
+        from src.services.google_sheet_service import FuzzyMatcher
+
+        video_id = uuid4()
+        mock_result = MagicMock()
+        mock_result.fetchall.return_value = [
+            (video_id, "ESPN 2007 WSOP SEASON 5 SHOW 16.mov", 0.85)
+        ]
+        mock_db_session.execute.return_value = mock_result
+
+        matcher = FuzzyMatcher(mock_db_session)
+        clip_title = "ESPN 2007 WSOP SEASON 5 SHOW 16_subclip_Daniel"
+
+        result = matcher.find_best_match(clip_title)
+
+        assert result is not None
+        assert result['video_file_id'] == video_id
+        assert result['confidence'] >= 70
+        assert result['method'] == 'fuzzy'
+
+    def test_find_match_medium_similarity_manual_review(self, mock_db_session):
+        """중간 유사도 (0.5-0.7) 수동 검토 대상"""
+        from src.services.google_sheet_service import FuzzyMatcher
+
+        video_id = uuid4()
+        mock_result = MagicMock()
+        mock_result.fetchall.return_value = [
+            (video_id, "PAD Season 13 Episode 02.mp4", 0.55)
+        ]
+        mock_db_session.execute.return_value = mock_result
+
+        matcher = FuzzyMatcher(mock_db_session)
+        clip_title = "PAD_S13_EP02_GGPoker-002"
+
+        result = matcher.find_best_match(clip_title)
+
+        assert result is not None
+        assert result['needs_review'] == True
+        assert 50 <= result['confidence'] < 70
+
+    def test_find_match_no_candidates(self, mock_db_session):
+        """매칭 후보 없음"""
+        from src.services.google_sheet_service import FuzzyMatcher
+
+        mock_result = MagicMock()
+        mock_result.fetchall.return_value = []
+        mock_db_session.execute.return_value = mock_result
+
+        matcher = FuzzyMatcher(mock_db_session)
+        clip_title = "Completely Unknown Title XYZ123"
+
+        result = matcher.find_best_match(clip_title)
+
+        assert result is None
+
+    def test_find_match_returns_top_candidates(self, mock_db_session):
+        """여러 후보 중 최고 매칭 반환"""
+        from src.services.google_sheet_service import FuzzyMatcher
+
+        best_id = uuid4()
+        mock_result = MagicMock()
+        mock_result.fetchall.return_value = [
+            (best_id, "WSOP 2008 Main Event Day 1.mp4", 0.9),
+            (uuid4(), "WSOP 2008 Main Event Day 2.mp4", 0.7),
+            (uuid4(), "WSOP 2007 Main Event.mp4", 0.5),
+        ]
+        mock_db_session.execute.return_value = mock_result
+
+        matcher = FuzzyMatcher(mock_db_session)
+        clip_title = "WSOP_2008_Main_Event_Day_1"
+
+        result = matcher.find_best_match(clip_title)
+
+        assert result['video_file_id'] == best_id
+
+    def test_batch_match_multiple_clips(self, mock_db_session):
+        """여러 클립 일괄 매칭"""
+        from src.services.google_sheet_service import FuzzyMatcher
+
+        matcher = FuzzyMatcher(mock_db_session)
+
+        clips = [
+            {"id": uuid4(), "title": "WSOP 2008 Show 1"},
+            {"id": uuid4(), "title": "WSOP 2008 Show 2"},
+            {"id": uuid4(), "title": "Unknown Title"},
+        ]
+
+        # Mock 각 쿼리 결과
+        mock_db_session.execute.return_value.fetchall.side_effect = [
+            [(uuid4(), "WSOP 2008 Show 1.mp4", 0.95)],
+            [(uuid4(), "WSOP 2008 Show 2.mp4", 0.95)],
+            [],  # no match
+        ]
+
+        results = matcher.batch_match(clips)
+
+        assert len(results) == 3
+        assert results[0]['matched'] == True
+        assert results[1]['matched'] == True
+        assert results[2]['matched'] == False
+
+
+class TestFuzzyMatcherIntegration:
+    """FuzzyMatcher DB 통합 테스트 (실제 pg_trgm 사용)"""
+
+    @pytest.fixture
+    def real_db_session(self):
+        """실제 DB 세션 (통합 테스트용)"""
+        # Docker 환경에서만 실행
+        pytest.importorskip("sqlalchemy")
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        try:
+            engine = create_engine(
+                "postgresql://pokervod:pokervod@localhost:5432/pokervod",
+                echo=False
+            )
+            Session = sessionmaker(bind=engine)
+            session = Session()
+            yield session
+            session.close()
+        except Exception:
+            pytest.skip("DB connection not available")
+
+    def test_pg_trgm_similarity_query(self, real_db_session):
+        """pg_trgm similarity() 함수 동작 확인"""
+        from sqlalchemy import text
+
+        result = real_db_session.execute(
+            text("SELECT similarity('WSOP 2008', 'WSOP 2008 Main Event')")
+        ).scalar()
+
+        assert result > 0.3  # 유사도 임계값 이상
+
+    def test_fuzzy_match_real_data(self, real_db_session):
+        """실제 데이터로 fuzzy 매칭 테스트"""
+        from src.services.google_sheet_service import FuzzyMatcher
+
+        matcher = FuzzyMatcher(real_db_session)
+
+        # 실제 iconik_metadata에서 가져온 제목
+        clip_title = "2009 WSOP Show 6 Ante Up For Africa.mov"
+
+        result = matcher.find_best_match(clip_title)
+
+        # 높은 유사도 매칭 기대
+        assert result is not None
+        assert result['confidence'] >= 80
