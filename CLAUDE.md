@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**버전**: 1.4.0 | **Context**: Windows, PowerShell
+**버전**: 1.5.0 | **Context**: Windows, PowerShell
 
 ---
 
@@ -148,6 +148,42 @@ Project → Season → Event → Episode → VideoFile
 
 ---
 
+## Frontend 개발 주의사항
+
+### API URL 설정 (중요!)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Production (Docker)  : 상대 경로 사용 → Nginx 프록시 처리   │
+│ Development (Vite)   : 환경변수로 직접 URL 지정             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+| 환경 | API 요청 | WebSocket | 설정 방법 |
+|------|---------|-----------|-----------|
+| **Production** | `/api/*` | `ws://현재호스트/ws/*` | 기본값 (상대 경로) |
+| **Development** | `http://localhost:9000/api/*` | `ws://localhost:9000/ws/*` | `.env.local` 설정 |
+
+### 개발 환경 설정
+
+```bash
+# frontend/.env.local (개발 시에만)
+VITE_API_BASE_URL=http://localhost:9000
+VITE_WS_BASE_URL=ws://localhost:9000
+```
+
+### 흔한 실수와 해결
+
+| 증상 | 원인 | 해결 |
+|------|------|------|
+| `ERR_CONNECTION_REFUSED :8000` | 절대 URL 하드코딩 | 상대 경로 사용 또는 환경변수 |
+| WebSocket 연결 실패 | 잘못된 포트/프로토콜 | `window.location` 기반 동적 URL |
+| CORS 에러 | 다른 origin 직접 호출 | Nginx 프록시 경유 |
+
+> **원칙**: Production에서는 항상 **상대 경로** (`/api/*`)를 사용하여 Nginx 프록시를 통해 API에 접근
+
+---
+
 ## 데이터베이스 작업 지침
 
 ### 문서 수정 시 우선순위
@@ -269,7 +305,7 @@ main (최신)
 
 ---
 
-**문서 버전**: 1.4.0
+**문서 버전**: 1.5.0
 **작성일**: 2025-12-09
 **수정일**: 2025-12-10
 
@@ -277,6 +313,7 @@ main (최신)
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|----------|
+| 1.5.0 | 2025-12-10 | Frontend 개발 주의사항 섹션 추가 (API URL, 환경변수, 흔한 실수) |
 | 1.4.0 | 2025-12-10 | Catalog UI 완료 반영, PR/Issue 정리 완료, 다음 작업 업데이트 |
 | 1.3.0 | 2025-12-10 | 개발 명령어 섹션 추가, 아키텍처 다이어그램 추가, 프로젝트 코드 테이블 추가 |
 | 1.2.0 | 2025-12-10 | 다음 세션 시작점 섹션 추가, Issue #23 완료 반영, API 포트 9000 변경 |
