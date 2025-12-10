@@ -5,8 +5,10 @@ Syncs hand clip data from Google Sheets to database.
 Implements rate limiting and incremental sync based on row numbers.
 """
 import os
+import ntpath  # Windows 경로 처리용 (크로스 플랫폼)
 import re
 import time
+import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID, uuid4
@@ -14,6 +16,8 @@ from dataclasses import dataclass, field
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -131,6 +135,382 @@ class TagNormalizer:
         return [cls.normalize(t) for t in tags]
 
 
+class TitleNormalizer:
+    """
+    제목 정규화 유틸리티 (Issue #32: Hybrid Fuzzy Matching)
+
+    iconik_metadata 제목을 video_files.file_name과 매칭하기 위해 정규화:
+    - _subclip_ 이후 텍스트 제거
+    - _PGM, ES코드, GMPO 코드 제거
+    - 파일 확장자 제거
+    - 언더스코어/하이픈 → 공백 변환
+    - 소문자 변환
+    """
+
+    # 제거할 패턴 (순서 중요)
+    REMOVE_PATTERNS = [
+        r'_subclip_.*$',           # _subclip_ 이후 모든 텍스트
+        r'_subclip$',              # _subclip만 있는 경우
+        r'_PGM$',                  # _PGM 접미사
+        r'[_\s]ES[O0]\d{9,10}',    # ES 코드 (ESO 또는 ES0 + 9-10자리)
+        r'[_\s]GMPO\s*\d+',        # GMPO 코드
+        r'\.(mp4|mov|mxf|avi|mkv)$',  # 파일 확장자
+    ]
+
+    # 컴파일된 패턴 캐시
+    _compiled_patterns = None
+
+    @classmethod
+    def _get_patterns(cls):
+        """컴파일된 패턴 반환 (캐싱)"""
+        if cls._compiled_patterns is None:
+            cls._compiled_patterns = [
+                re.compile(pattern, re.IGNORECASE)
+                for pattern in cls.REMOVE_PATTERNS
+            ]
+        return cls._compiled_patterns
+
+    @classmethod
+    def normalize(cls, title: str) -> str:
+        """
+        제목 정규화
+
+        Args:
+            title: 원본 제목
+
+        Returns:
+            정규화된 제목 (소문자, 공백으로 구분)
+        """
+        if not title:
+            return ""
+
+        result = title.strip()
+
+        # 패턴 제거
+        for pattern in cls._get_patterns():
+            result = pattern.sub('', result)
+
+        # 언더스코어/하이픈 → 공백
+        result = re.sub(r'[_\-]+', ' ', result)
+
+        # 연속 공백 정리
+        result = re.sub(r'\s+', ' ', result)
+
+        # 소문자 변환 및 trim
+        return result.lower().strip()
+
+
+class NasPathNormalizer:
+    """
+    NAS 경로 정규화 유틸리티
+
+    Issue #30: Google Sheets의 Nas Folder Link를 DB 경로 형식으로 변환
+    - UNC 경로 (\\10.10.100.122\docker\GGPNAs\...) → Z:/GGPNAs/...
+    - Docker 경로 (/nas/ARCHIVE/...) → Z:/GGPNAs/ARCHIVE/...
+    - 백슬래시 → 포워드슬래시
+    """
+
+    # 경로 변환 매핑 (순서 중요: 더 구체적인 패턴이 먼저)
+    PATH_MAPPINGS = [
+        # UNC 경로 (이중 백슬래시 포함)
+        (r'\\\\10\.10\.100\.122\\docker\\GGPNAs\\', 'Z:/GGPNAs/'),
+        (r'//10\.10\.100\.122/docker/GGPNAs/', 'Z:/GGPNAs/'),
+        # Docker 마운트 경로
+        (r'/nas/', 'Z:/GGPNAs/'),
+    ]
+
+    @classmethod
+    def normalize(cls, path: str) -> str:
+        """
+        경로를 DB 저장 형식(Z:\...)으로 정규화
+
+        Args:
+            path: 원본 경로 (UNC, Docker, Windows)
+
+        Returns:
+            정규화된 경로 (backslash, Z: 드라이브) - DB 형식과 일치
+        """
+        if not path:
+            return ""
+
+        # 먼저 포워드슬래시로 통일 (패턴 매칭용)
+        normalized = path.replace('\\', '/')
+
+        # 이중 슬래시 정리
+        while '//' in normalized and not normalized.startswith('//10'):
+            normalized = normalized.replace('//', '/')
+
+        # 매핑 적용
+        for pattern, replacement in cls.PATH_MAPPINGS:
+            normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+
+        # DB 형식에 맞게 백슬래시로 변환 (Z:/... → Z:\...)
+        normalized = normalized.replace('/', '\\')
+
+        return normalized
+
+    @classmethod
+    def to_db_path(cls, sheet_path: str) -> str:
+        """Sheet 경로 → DB 검색용 경로 (normalize의 별칭)"""
+        return cls.normalize(sheet_path)
+
+
+class VideoFileMatcher:
+    """
+    Nas Folder Link → video_files.file_path 매칭
+
+    Issue #30: Google Sheets의 NAS 경로로 video_files.id를 찾음
+    """
+
+    def __init__(self, db: Session):
+        self.db = db
+        self.normalizer = NasPathNormalizer()
+
+        # 캐시: file_path → video_file_id (메모리 효율)
+        self._path_cache: Dict[str, UUID] = {}
+
+    def find_video_file_id(self, nas_path: str) -> Optional[UUID]:
+        """
+        NAS 경로로 video_file_id 조회
+
+        전략:
+        1. 정확한 file_path 매칭 (가장 빠름)
+        2. 확장자 추가해서 매칭 (.mp4, .mov 등)
+        3. 파일명 LIKE 검색 (확장자 무시)
+        """
+        if not nas_path:
+            return None
+
+        normalized = self.normalizer.to_db_path(nas_path)
+
+        # 1. 캐시 확인
+        if normalized in self._path_cache:
+            return self._path_cache[normalized]
+
+        # 2. 정확한 매칭
+        result = self.db.execute(
+            text("""
+                SELECT id FROM pokervod.video_files
+                WHERE file_path = :path
+                LIMIT 1
+            """),
+            {'path': normalized}
+        ).first()
+
+        if result:
+            self._path_cache[normalized] = result[0]
+            return result[0]
+
+        # 3. 확장자가 없는 경우 일반적인 비디오 확장자 추가해서 시도
+        # ntpath.basename() 사용: Linux에서도 Windows 경로 처리 가능
+        filename = ntpath.basename(normalized)
+        if filename and not any(filename.lower().endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.mkv']):
+            for ext in ['.mp4', '.mov', '.avi', '.mkv']:
+                result = self.db.execute(
+                    text("""
+                        SELECT id FROM pokervod.video_files
+                        WHERE file_name = :filename
+                        LIMIT 1
+                    """),
+                    {'filename': filename + ext}
+                ).first()
+
+                if result:
+                    self._path_cache[normalized] = result[0]
+                    return result[0]
+
+        # 4. 파일명 LIKE 검색 (확장자 무시, 폴더 경로 변경 대응)
+        if filename:
+            # 확장자 제거한 이름으로 LIKE 검색
+            name_without_ext = ntpath.splitext(filename)[0]
+            if name_without_ext:
+                result = self.db.execute(
+                    text("""
+                        SELECT id FROM pokervod.video_files
+                        WHERE file_name LIKE :pattern
+                        LIMIT 1
+                    """),
+                    {'pattern': name_without_ext + '%'}
+                ).first()
+
+                if result:
+                    self._path_cache[normalized] = result[0]
+                    return result[0]
+
+        return None
+
+    def preload_cache(self):
+        """video_files 전체를 캐시에 로드 (대량 동기화 시)"""
+        results = self.db.execute(
+            text("""
+                SELECT id, file_path, file_name
+                FROM pokervod.video_files
+                WHERE deleted_at IS NULL
+            """)
+        ).fetchall()
+
+        for row in results:
+            self._path_cache[row[1]] = row[0]  # file_path → id
+
+
+class FuzzyMatcher:
+    """
+    Fuzzy 매칭으로 video_file_id 찾기 (Issue #32)
+
+    NAS 경로가 없는 iconik_metadata 레코드에서
+    제목(title) 기반으로 video_files와 매칭
+
+    전략:
+    1. pg_trgm similarity() 함수로 후보군 필터링 (DB 레벨)
+    2. TitleNormalizer로 제목 정규화
+    3. 신뢰도 점수 기반 자동/수동 분류
+    """
+
+    # 매칭 임계값
+    AUTO_MATCH_THRESHOLD = 70    # 자동 매칭 (70% 이상)
+    REVIEW_THRESHOLD = 50        # 수동 검토 (50-70%)
+    MIN_SIMILARITY = 0.3         # pg_trgm 최소 유사도
+
+    def __init__(self, db: Session):
+        self.db = db
+        self._candidates_cache: Dict[str, List[Tuple]] = {}
+
+    def find_best_match(self, clip_title: str) -> Optional[Dict]:
+        """
+        제목으로 최적의 video_file 매칭 찾기
+
+        Args:
+            clip_title: hand_clips.title
+
+        Returns:
+            {
+                'video_file_id': UUID,
+                'file_name': str,
+                'confidence': int (0-100),
+                'method': 'fuzzy',
+                'needs_review': bool
+            }
+            또는 매칭 없으면 None
+        """
+        if not clip_title:
+            return None
+
+        # 1. pg_trgm으로 후보군 검색
+        candidates = self._get_candidates(clip_title)
+
+        if not candidates:
+            return None
+
+        # 2. 정규화된 제목으로 최적 매칭 선택
+        normalized_title = TitleNormalizer.normalize(clip_title)
+
+        best_match = None
+        best_score = 0
+
+        for video_id, file_name, pg_similarity in candidates:
+            # pg_trgm 유사도를 100점 만점으로 변환
+            confidence = int(pg_similarity * 100)
+
+            # 정규화된 파일명과 추가 비교 (선택적)
+            normalized_filename = TitleNormalizer.normalize(file_name)
+
+            if confidence > best_score:
+                best_score = confidence
+                best_match = {
+                    'video_file_id': video_id,
+                    'file_name': file_name,
+                    'confidence': confidence,
+                    'method': 'fuzzy',
+                    'needs_review': confidence < self.AUTO_MATCH_THRESHOLD
+                }
+
+        return best_match
+
+    def _get_candidates(self, clip_title: str, limit: int = 10) -> List[Tuple]:
+        """
+        pg_trgm으로 유사한 video_files 후보 검색
+
+        Args:
+            clip_title: 검색할 제목
+            limit: 최대 후보 수
+
+        Returns:
+            [(video_id, file_name, similarity), ...]
+        """
+        # 캐시 확인
+        cache_key = clip_title[:50]  # 긴 제목은 앞 50자만
+        if cache_key in self._candidates_cache:
+            return self._candidates_cache[cache_key]
+
+        try:
+            result = self.db.execute(
+                text("""
+                    SELECT id, file_name, similarity(file_name, :title) as score
+                    FROM pokervod.video_files
+                    WHERE similarity(file_name, :title) > :min_sim
+                      AND deleted_at IS NULL
+                    ORDER BY score DESC
+                    LIMIT :limit
+                """),
+                {
+                    'title': clip_title,
+                    'min_sim': self.MIN_SIMILARITY,
+                    'limit': limit
+                }
+            ).fetchall()
+
+            candidates = [(row[0], row[1], row[2]) for row in result]
+            self._candidates_cache[cache_key] = candidates
+            return candidates
+
+        except Exception as e:
+            logger.error(f"FuzzyMatcher query failed: {e}")
+            return []
+
+    def batch_match(self, clips: List[Dict]) -> List[Dict]:
+        """
+        여러 클립 일괄 매칭
+
+        Args:
+            clips: [{'id': UUID, 'title': str}, ...]
+
+        Returns:
+            [{'clip_id': UUID, 'matched': bool, 'result': Dict or None}, ...]
+        """
+        results = []
+
+        for clip in clips:
+            match_result = self.find_best_match(clip.get('title', ''))
+
+            results.append({
+                'clip_id': clip.get('id'),
+                'matched': match_result is not None,
+                'result': match_result
+            })
+
+        return results
+
+    def get_statistics(self) -> Dict:
+        """매칭 통계 조회"""
+        stats = self.db.execute(
+            text("""
+                SELECT
+                    COUNT(*) as total,
+                    COUNT(video_file_id) as matched,
+                    COUNT(*) - COUNT(video_file_id) as unmatched
+                FROM pokervod.hand_clips
+                WHERE sheet_source = 'iconik_metadata'
+            """)
+        ).first()
+
+        return {
+            'total': stats[0] if stats else 0,
+            'matched': stats[1] if stats else 0,
+            'unmatched': stats[2] if stats else 0,
+            'match_rate': round(stats[1] / stats[0] * 100, 1) if stats and stats[0] > 0 else 0
+        }
+
+
 class GoogleSheetService:
     """
     Google Sheets synchronization service.
@@ -141,15 +521,30 @@ class GoogleSheetService:
     MAX_REQUESTS_PER_MINUTE = 60
     BATCH_SIZE = 100
 
-    # Default column mapping for hand_analysis sheet
+    # Default column mapping for Metadata Archive sheet (Issue #28: 실제 시트 구조 반영)
+    # A: File No., B: File Name, C: Nas Folder Link, D: In, E: Out, F: Hand Grade,
+    # G: Winner, H: Hands, I-K: Tag (Player) 1-3, L-R: Tag (Poker Play) 1-7, S-T: Tag (Emotion) 1-2
     HAND_ANALYSIS_COLUMNS = {
-        'timecode': 0,
-        'title': 1,
-        'players': 2,
-        'tags': 3,
-        'notes': 4,
-        'hand_grade': 5,
-        'video_ref': 6,
+        'file_no': 0,           # A: File No. (클립 번호)
+        'title': 1,             # B: File Name (제목)
+        'nas_path': 2,          # C: Nas Folder Link
+        'timecode': 3,          # D: In (시작 타임코드) ★ 핵심
+        'timecode_end': 4,      # E: Out (종료 타임코드)
+        'hand_grade': 5,        # F: Hand Grade (등급)
+        'winner': 6,            # G: Winner (승자)
+        'hands': 7,             # H: Hands (핸드 조합)
+        'player_1': 8,          # I: Tag (Player) 1
+        'player_2': 9,          # J: Tag (Player) 2
+        'player_3': 10,         # K: Tag (Player) 3
+        'tag_play_1': 11,       # L: Tag (Poker Play) 1
+        'tag_play_2': 12,       # M: Tag (Poker Play) 2
+        'tag_play_3': 13,       # N: Tag (Poker Play) 3
+        'tag_play_4': 14,       # O: Tag (Poker Play) 4
+        'tag_play_5': 15,       # P: Tag (Poker Play) 5
+        'tag_play_6': 16,       # Q: Tag (Poker Play) 6
+        'tag_play_7': 17,       # R: Tag (Poker Play) 7
+        'tag_emotion_1': 18,    # S: Tag (Emotion) 1
+        'tag_emotion_2': 19,    # T: Tag (Emotion) 2
     }
 
     # Default column mapping for hand_database sheet
@@ -165,19 +560,28 @@ class GoogleSheetService:
     }
 
     # Sheet configurations - 실제 시트 ID (PRD 기준)
+    # Issue #28: 시트 이름 변경 및 iconik Metadata 보류
     SHEET_CONFIGS = {
-        'hand_analysis': SheetConfig(
+        # Metadata Archive (구 Hand Analysis) - 현재 사용
+        'metadata_archive': SheetConfig(
             sheet_id='1_RN_W_ZQclSZA0Iez6XniCXVtjkkd5HNZwiT6l-z6d4',
-            sheet_name='Hand Analysis',
-            source_type='hand_analysis',
+            sheet_name='Metadata Archive',
+            source_type='metadata_archive',
             column_mapping=HAND_ANALYSIS_COLUMNS,
         ),
-        'hand_database': SheetConfig(
-            sheet_id='1pUMPKe-OsKc-Xd8lH1cP9ctJO4hj3keXY5RwNFp2Mtk',
-            sheet_name='Hand Database',
-            source_type='hand_database',
-            column_mapping=HAND_DATABASE_COLUMNS,
-        ),
+        # iconik Metadata (구 Hand Database) - 사용 보류
+        # 'iconik_metadata': SheetConfig(
+        #     sheet_id='1pUMPKe-OsKc-Xd8lH1cP9ctJO4hj3keXY5RwNFp2Mtk',
+        #     sheet_name='iconik Metadata',
+        #     source_type='iconik_metadata',
+        #     column_mapping=HAND_DATABASE_COLUMNS,
+        # ),
+    }
+
+    # Legacy aliases for backward compatibility
+    LEGACY_SHEET_ALIASES = {
+        'hand_analysis': 'metadata_archive',
+        'hand_database': 'iconik_metadata',  # 보류됨
     }
 
     def __init__(self, db: Session, credentials_path: Optional[str] = None):
@@ -194,6 +598,9 @@ class GoogleSheetService:
         self._client = None
         self._request_count = 0
         self._request_window_start = time.time()
+
+        # Issue #30: video_file_id 매칭용
+        self.video_matcher = VideoFileMatcher(db)
 
     def _get_client(self):
         """Get or create gspread client (lazy initialization)"""
@@ -394,7 +801,7 @@ class GoogleSheetService:
         row_num: int,
         config: SheetConfig,
     ) -> Optional[Dict[str, Any]]:
-        """Parse a row into hand clip data"""
+        """Parse a row into hand clip data (Issue #28: 실제 시트 구조 반영)"""
         mapping = config.column_mapping
 
         def get_col(name: str) -> Optional[str]:
@@ -403,31 +810,61 @@ class GoogleSheetService:
                 return row[idx].strip() if row[idx] else None
             return None
 
+        # Issue #30: Nas Folder Link (C열) → video_file_id 매칭
+        nas_path = get_col('nas_path')
+        video_file_id = None
+        if nas_path:
+            video_file_id = self.video_matcher.find_video_file_id(nas_path)
+
+        # Issue #28: Metadata Archive 시트 구조에 맞게 매핑
         clip_data = {
             'id': uuid4(),
             'sheet_source': config.source_type,
             'sheet_row_number': row_num,
-            'timecode': get_col('timecode'),
             'title': get_col('title') or get_col('video_title'),
-            'notes': get_col('notes'),
-            'hand_grade': get_col('hand_grade'),
+            'timecode': get_col('timecode'),           # D열: In (시작 타임코드)
+            'timecode_end': get_col('timecode_end'),   # E열: Out (종료 타임코드)
+            'hand_grade': get_col('hand_grade'),       # F열: Hand Grade
+            'notes': get_col('winner'),                # G열: Winner → notes에 임시 저장
+            'video_file_id': video_file_id,            # Issue #30: 핵심 연결
         }
 
-        # Parse tags
-        tags_str = get_col('tags')
-        if tags_str:
-            clip_data['normalized_tags'] = TagNormalizer.normalize_list(tags_str)
+        # Parse hands involved (H열)
+        hands_str = get_col('hands')
+        if hands_str:
+            clip_data['hands_involved'] = hands_str
 
-        # Parse players (comma-separated)
-        players_str = get_col('players')
-        if players_str:
-            clip_data['players'] = [p.strip() for p in players_str.split(',') if p.strip()]
+        # Parse players (I-K열: Tag (Player) 1-3)
+        players = []
+        for i in range(1, 4):
+            player = get_col(f'player_{i}')
+            if player:
+                players.append(player)
+        if players:
+            clip_data['players'] = players
 
-        # Parse pot size if available
+        # Parse poker play tags (L-R열: Tag (Poker Play) 1-7)
+        play_tags = []
+        for i in range(1, 8):
+            tag = get_col(f'tag_play_{i}')
+            if tag:
+                play_tags.append(TagNormalizer.normalize(tag))
+        if play_tags:
+            clip_data['normalized_tags'] = play_tags
+
+        # Parse emotion tags (S-T열: Tag (Emotion) 1-2)
+        emotion_tags = []
+        for i in range(1, 3):
+            tag = get_col(f'tag_emotion_{i}')
+            if tag:
+                emotion_tags.append(TagNormalizer.normalize(tag))
+        if emotion_tags:
+            clip_data['emotion_tags'] = emotion_tags
+
+        # Legacy: Parse pot size if available (hand_database용)
         pot_str = get_col('pot_size')
         if pot_str:
             try:
-                # Remove currency symbols and parse
                 pot_clean = re.sub(r'[^\d.]', '', pot_str)
                 clip_data['pot_size'] = int(float(pot_clean))
             except ValueError:
@@ -455,14 +892,16 @@ class GoogleSheetService:
         ).first()
 
         if existing:
-            # Update existing
+            # Update existing (Issue #30: video_file_id 추가)
             self.db.execute(
                 text("""
                     UPDATE pokervod.hand_clips
                     SET title = :title,
                         timecode = :timecode,
+                        timecode_end = :timecode_end,
                         notes = :notes,
                         hand_grade = :hand_grade,
+                        video_file_id = :video_file_id,
                         updated_at = NOW()
                     WHERE id = :id
                 """),
@@ -470,19 +909,21 @@ class GoogleSheetService:
                     'id': existing[0],
                     'title': clip_data.get('title'),
                     'timecode': clip_data.get('timecode'),
+                    'timecode_end': clip_data.get('timecode_end'),
                     'notes': clip_data.get('notes'),
                     'hand_grade': clip_data.get('hand_grade'),
+                    'video_file_id': str(clip_data.get('video_file_id')) if clip_data.get('video_file_id') else None,
                 }
             )
             return False
         else:
-            # Insert new
+            # Insert new (Issue #30: video_file_id 추가)
             self.db.execute(
                 text("""
                     INSERT INTO pokervod.hand_clips (
-                        id, sheet_source, sheet_row_number, title, timecode, notes, hand_grade
+                        id, sheet_source, sheet_row_number, title, timecode, timecode_end, notes, hand_grade, video_file_id
                     ) VALUES (
-                        :id, :source, :row_num, :title, :timecode, :notes, :hand_grade
+                        :id, :source, :row_num, :title, :timecode, :timecode_end, :notes, :hand_grade, :video_file_id
                     )
                 """),
                 {
@@ -491,8 +932,10 @@ class GoogleSheetService:
                     'row_num': clip_data['sheet_row_number'],
                     'title': clip_data.get('title'),
                     'timecode': clip_data.get('timecode'),
+                    'timecode_end': clip_data.get('timecode_end'),
                     'notes': clip_data.get('notes'),
                     'hand_grade': clip_data.get('hand_grade'),
+                    'video_file_id': str(clip_data.get('video_file_id')) if clip_data.get('video_file_id') else None,
                 }
             )
             return True

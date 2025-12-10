@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**버전**: 1.6.0 | **Context**: Windows, PowerShell
+**버전**: 1.9.0 | **Context**: Windows, PowerShell
 
 ---
 
@@ -229,6 +229,72 @@ VITE_WS_BASE_URL=ws://localhost:9000
 - **Minor (Y)**: 기능 추가, 섹션 신규/삭제
 - **Patch (Z)**: 오타 수정, 설명 보완, 문서 정리
 
+### ⚠️ 문서 수정 시 필수 표기 규칙
+
+> **중요**: 모든 LLD 문서 수정 시 반드시 아래 사항을 준수할 것
+
+1. **문서 상단 버전 업데이트**: `버전: X.Y.Z` 값을 수정 내용에 맞게 증가
+2. **문서 하단 상태 필드 업데이트**:
+   ```markdown
+   **상태**: Updated vX.Y.Z - [수정 내용 요약]
+   ```
+3. **변경 이력 테이블에 새 항목 추가**: 날짜, 버전, 변경 내용 기록
+4. **수정일 갱신**: `수정일: YYYY-MM-DD` 값을 현재 날짜로 변경
+
+**예시**:
+```markdown
+**문서 버전**: 1.3.0
+**수정일**: 2025-12-10
+**상태**: Updated v1.3.0 - Issue #28 무한 스크롤 및 DB 매핑 설계 추가
+
+| 1.3.0 | 2025-12-10 | Issue #28: Section 9.6-9.9 추가 (Cursor 페이지네이션) |
+```
+
+> 이 규칙을 준수하면 사용자가 검증 시 현재 버전과 최근 변경사항을 즉시 확인할 수 있습니다.
+
+### ⚠️ Frontend 페이지 수정 시 필수 표기 규칙
+
+> **중요**: Frontend 주요 페이지 수정 시 반드시 아래 사항을 준수할 것
+
+1. **파일 상단 JSDoc 버전 업데이트**:
+   ```tsx
+   /**
+    * Page Name - 페이지 설명
+    *
+    * @version X.Y.Z
+    * @updated YYYY-MM-DD
+    * @changes [수정 내용 요약]
+    */
+   ```
+
+2. **PAGE_VERSION 상수 업데이트** (UI 하단에 표시됨):
+   ```tsx
+   const PAGE_VERSION = {
+     version: 'X.Y.Z',
+     updated: 'YYYY-MM-DD',
+     changes: '[수정 내용 요약]',
+   };
+   ```
+
+3. **페이지 제목 아래에 버전 표시 UI 포함**:
+   ```tsx
+   {/* Page Header */}
+   <div>
+     <h2 className="text-2xl font-bold">페이지 제목</h2>
+     <p className="text-gray-500 mt-1">페이지 설명</p>
+     <div className="mt-2 text-xs text-gray-400 flex items-center gap-2">
+       <span className="bg-gray-100 px-2 py-0.5 rounded">
+         📋 v{PAGE_VERSION.version}
+       </span>
+       <span>{PAGE_VERSION.updated}</span>
+       <span className="text-gray-300">|</span>
+       <span>{PAGE_VERSION.changes}</span>
+     </div>
+   </div>
+   ```
+
+> 이 규칙을 준수하면 사용자가 브라우저에서 페이지 진입 시 바로 버전을 확인할 수 있습니다.
+
 ---
 
 ## GitHub 이슈 연동
@@ -269,7 +335,7 @@ gh pr create --title "fix: resolve issues #1-15" --body "Closes #1, #2, ..."
 ### 현재 브랜치
 
 ```
-main (최신)
+fix/issue-23-sync-inspection
 ```
 
 ### Docker 컨테이너 상태
@@ -306,14 +372,18 @@ main (최신)
 
 ---
 
-**문서 버전**: 1.6.0
+**문서 버전**: 1.9.0
 **작성일**: 2025-12-09
 **수정일**: 2025-12-10
+**상태**: Updated v1.9.0 - Issue #28 시트 이름 변경 (Metadata Archive 활성, iconik Metadata 보류)
 
 ### 변경 이력
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|----------|
+| 1.9.0 | 2025-12-10 | Issue #28: 시트 이름 변경 - Hand Analysis → Metadata Archive, Hand Database → iconik Metadata (보류) |
+| 1.8.0 | 2025-12-10 | Frontend 페이지 수정 시 버전 표기 규칙 추가 (PAGE_VERSION 상수, UI 하단 표시) |
+| 1.7.0 | 2025-12-10 | 문서 수정 시 필수 표기 규칙 섹션 추가 (버전, 상태, 변경 이력 업데이트 규칙) |
 | 1.6.0 | 2025-12-10 | Google Sheets 연동 완료 (2,490 hand clips), 다음 작업 우선순위 갱신 |
 | 1.5.0 | 2025-12-10 | Frontend 개발 주의사항 섹션 추가 (API URL, 환경변수, 흔한 실수) |
 | 1.4.0 | 2025-12-10 | Catalog UI 완료 반영, PR/Issue 정리 완료, 다음 작업 업데이트 |

@@ -2,6 +2,10 @@
  * DataBrowser - NAS 폴더 트리 및 파일 브라우저
  * BLOCK_FRONTEND / FrontendAgent
  * Issue #23: 동기화된 폴더 트리 구조 및 파일 구조 표시
+ *
+ * @version 1.2.0
+ * @updated 2025-12-10
+ * @changes Issue #28: max_depth 15 적용, 전체 NAS 하이어라키 표시
  */
 
 import { useState } from 'react';
@@ -14,7 +18,8 @@ import type { FolderNode, FolderTreeResponse } from '../../types/sync';
 async function fetchFolderTree(projectCode?: string): Promise<FolderTreeResponse> {
   const params = new URLSearchParams();
   if (projectCode) params.set('project_code', projectCode);
-  params.set('max_depth', '5');
+  // Issue #28: max_depth 15로 변경 - 전체 하이어라키 표시 (8-10 depth 경로 지원)
+  params.set('max_depth', '15');
 
   const response = await apiClient.get<FolderTreeResponse>(`/api/sync/tree?${params}`);
   return response.data;
