@@ -3,9 +3,9 @@
  * BLOCK_FRONTEND / FrontendAgent
  * Issue #23: 동기화된 구글 시트 데이터 표시
  *
- * @version 1.2.0
+ * @version 1.3.0
  * @updated 2025-12-10
- * @changes Issue #28: HandClipsInfiniteList 연동 - DB 매핑 다이어그램 포함
+ * @changes Issue #28: 시트 이름 변경 반영 - Metadata Archive 활성
  *
  * v1.2.0: HandClipsInfiniteList 연동 (DB 매핑 뷰)
  * v1.1.0: Hand Clips 검증 대시보드 추가 (LLD 02 Section 9)

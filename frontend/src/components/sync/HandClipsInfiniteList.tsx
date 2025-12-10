@@ -3,9 +3,9 @@
  * BLOCK_FRONTEND / FrontendAgent
  * Issue #28: Cursor-based Pagination
  *
- * @version 1.1.0
+ * @version 1.2.0
  * @updated 2025-12-10
- * @changes Issue #28: 시트 이름 변경 (metadata_archive), iconik_metadata 보류
+ * @changes Issue #28: 시트 이름 변경 - Metadata Archive 활성, iconik Metadata 보류
  *
  * 기능:
  * - 기존 HandClipsTable 대체

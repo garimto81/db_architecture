@@ -2,16 +2,16 @@
  * Sync Page - 동기화 상세 페이지
  * BLOCK_FRONTEND / FrontendAgent
  *
- * @version 1.5.0
+ * @version 1.6.0
  * @updated 2025-12-10
- * @changes Issue #28: Sheets 탭 DB 매핑 뷰 연결 (HandClipsInfiniteList)
+ * @changes Issue #28: 시트 이름 변경 - Metadata Archive 활성, iconik Metadata 보류
  */
 
 // 페이지 버전 정보 (UI 하단에 표시)
 const PAGE_VERSION = {
-  version: '1.5.0',
+  version: '1.6.0',
   updated: '2025-12-10',
-  changes: 'Issue #28: Sheets DB 매핑 뷰, NAS 전체 하이어라키',
+  changes: 'Issue #28: Metadata Archive 활성, iconik Metadata 보류',
 };
 
 import { Card, Button, Badge, ProgressBar } from '../components/common';

@@ -3,9 +3,9 @@
  * BLOCK_FRONTEND / FrontendAgent
  * Issue #23: 동기화된 폴더 트리 구조 및 파일 구조 표시
  *
- * @version 1.1.0
+ * @version 1.2.0
  * @updated 2025-12-10
- * @changes Issue #28: max_depth 15로 변경 (전체 하이어라키 표시)
+ * @changes Issue #28: max_depth 15 적용, 전체 NAS 하이어라키 표시
  */
 
 import { useState } from 'react';
