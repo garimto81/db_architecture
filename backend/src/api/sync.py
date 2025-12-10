@@ -1303,8 +1303,8 @@ def get_hand_clips(
     """
     from sqlalchemy import text
 
-    # Build query
-    where_clause = "WHERE 1=1"
+    # Build query - Issue #28: is_active=true만 조회 (iconik_metadata 소프트 삭제)
+    where_clause = "WHERE is_active = true"
     params: Dict[str, Any] = {'offset': (page - 1) * page_size, 'limit': page_size}
 
     if source:
@@ -1367,8 +1367,8 @@ def get_hand_clips_cursor(
     """
     from sqlalchemy import text
 
-    # Build WHERE clause
-    where_parts = ["1=1"]
+    # Build WHERE clause - Issue #28: is_active=true만 조회 (iconik_metadata 소프트 삭제)
+    where_parts = ["is_active = true"]
     params: Dict[str, Any] = {'limit': limit + 1}
 
     if source:
@@ -1381,11 +1381,11 @@ def get_hand_clips_cursor(
 
     where_clause = " AND ".join(where_parts)
 
-    # Get total count (for informational purposes)
-    count_where = "1=1"
+    # Get total count (for informational purposes) - is_active=true만
+    count_where = "is_active = true"
     count_params: Dict[str, Any] = {}
     if source:
-        count_where = "sheet_source = :source"
+        count_where += " AND sheet_source = :source"
         count_params['source'] = source
 
     total = db.execute(
@@ -1450,13 +1450,14 @@ def get_hand_clips_summary(
     """
     from sqlalchemy import text
 
-    # Total count
-    total = db.execute(text("SELECT COUNT(*) FROM pokervod.hand_clips")).scalar() or 0
+    # Total count - Issue #28: is_active=true만 조회
+    total = db.execute(text("SELECT COUNT(*) FROM pokervod.hand_clips WHERE is_active = true")).scalar() or 0
 
-    # Count by source
+    # Count by source - is_active=true만
     source_counts = db.execute(text("""
         SELECT sheet_source, COUNT(*) as count
         FROM pokervod.hand_clips
+        WHERE is_active = true
         GROUP BY sheet_source
         ORDER BY sheet_source
     """)).all()
@@ -1469,10 +1470,11 @@ def get_hand_clips_summary(
     """)).scalar()
     latest_sync = latest_sync_result.isoformat() if latest_sync_result else None
 
-    # Sample clips (5 most recent)
+    # Sample clips (5 most recent) - is_active=true만
     sample_rows = db.execute(text("""
         SELECT id, sheet_source, sheet_row_number, title, timecode, notes, hand_grade, created_at
         FROM pokervod.hand_clips
+        WHERE is_active = true
         ORDER BY created_at DESC
         LIMIT 5
     """)).all()
