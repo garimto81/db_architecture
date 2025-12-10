@@ -38,8 +38,10 @@ function formatRelativeTime(dateStr: string | null): string {
 
 // Hand Clip 카드 컴포넌트
 function HandClipCard({ clip }: { clip: HandClipResponse }) {
-  // Issue #28: 시트 이름 변경 - metadata_archive만 사용
+  // Issue #28: 시트 이름 변경 - metadata_archive 활성, iconik_metadata 보류
+  // 호환성: 이전 값(hand_analysis)과 새 값(metadata_archive) 모두 지원
   const isMetadataArchive = clip.sheet_source === 'metadata_archive' || clip.sheet_source === 'hand_analysis';
+  const isIconikMetadata = clip.sheet_source === 'iconik_metadata' || clip.sheet_source === 'hand_database';
 
   return (
     <div className="border border-gray-200 rounded-lg p-4 bg-white hover:bg-gray-50 transition-colors">
@@ -50,7 +52,7 @@ function HandClipCard({ clip }: { clip: HandClipResponse }) {
           <div className="flex items-center gap-2 mb-2">
             <Badge
               status={isMetadataArchive ? 'running' : 'idle'}
-              label={isMetadataArchive ? 'Metadata Archive' : 'iconik Metadata'}
+              label={isMetadataArchive ? 'Metadata Archive' : (isIconikMetadata ? 'iconik Metadata' : clip.sheet_source)}
             />
             <span className="text-xs text-gray-400">
               Row #{clip.sheet_row_number}
