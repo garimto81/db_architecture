@@ -6,7 +6,9 @@
 import axios from 'axios';
 
 // 환경 변수에서 API URL 가져오기
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+// Production: 상대 경로 사용 (Nginx 프록시)
+// Development: VITE_API_BASE_URL 환경변수 또는 localhost:9000
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 // Axios 인스턴스 생성
 export const apiClient = axios.create({
@@ -50,9 +52,15 @@ apiClient.interceptors.response.use(
 );
 
 // WebSocket URL 가져오기
+// Production: 현재 호스트 기반 ws:// 또는 wss:// 사용
+// Development: VITE_WS_BASE_URL 환경변수 사용
 export const getWsUrl = (path: string): string => {
-  const wsBaseUrl = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000';
-  return `${wsBaseUrl}${path}`;
+  if (import.meta.env.VITE_WS_BASE_URL) {
+    return `${import.meta.env.VITE_WS_BASE_URL}${path}`;
+  }
+  // Production: 현재 호스트 기반 WebSocket URL 생성
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}${path}`;
 };
 
 export default apiClient;
