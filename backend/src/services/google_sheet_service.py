@@ -262,12 +262,41 @@ class VideoFileMatcher:
     Issue #30: Google Sheets의 NAS 경로로 video_files.id를 찾음
     """
 
+    # LRU 캐시 최대 크기 (P1 Fix: 메모리 누수 방지)
+    MAX_CACHE_SIZE = 5000
+
     def __init__(self, db: Session):
         self.db = db
         self.normalizer = NasPathNormalizer()
 
-        # 캐시: file_path → video_file_id (메모리 효율)
+        # 캐시: file_path → video_file_id (LRU 방식)
         self._path_cache: Dict[str, UUID] = {}
+        self._cache_order: List[str] = []  # LRU 순서 추적
+
+    @staticmethod
+    def _escape_like_pattern(s: str) -> str:
+        """
+        SQL LIKE 패턴 이스케이프 (P0 Fix: SQL Injection 방어)
+
+        %, _, [, ] 등 SQL 와일드카드를 이스케이프 처리
+        """
+        if not s:
+            return s
+        return s.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+
+    def _cache_put(self, key: str, value: UUID) -> None:
+        """LRU 캐시에 항목 추가"""
+        if key in self._path_cache:
+            # 이미 존재하면 순서만 갱신
+            self._cache_order.remove(key)
+            self._cache_order.append(key)
+        else:
+            # 캐시 크기 초과 시 가장 오래된 항목 제거
+            if len(self._path_cache) >= self.MAX_CACHE_SIZE:
+                oldest = self._cache_order.pop(0)
+                del self._path_cache[oldest]
+            self._path_cache[key] = value
+            self._cache_order.append(key)
 
     def find_video_file_id(self, nas_path: str) -> Optional[UUID]:
         """
@@ -298,7 +327,7 @@ class VideoFileMatcher:
         ).first()
 
         if result:
-            self._path_cache[normalized] = result[0]
+            self._cache_put(normalized, result[0])
             return result[0]
 
         # 3. 확장자가 없는 경우 일반적인 비디오 확장자 추가해서 시도
@@ -316,7 +345,7 @@ class VideoFileMatcher:
                 ).first()
 
                 if result:
-                    self._path_cache[normalized] = result[0]
+                    self._cache_put(normalized, result[0])
                     return result[0]
 
         # 4. 파일명 LIKE 검색 (확장자 무시, 폴더 경로 변경 대응)
@@ -324,17 +353,19 @@ class VideoFileMatcher:
             # 확장자 제거한 이름으로 LIKE 검색
             name_without_ext = ntpath.splitext(filename)[0]
             if name_without_ext:
+                # P0 Fix: SQL Injection 방어 - LIKE 패턴 이스케이프
+                escaped_name = self._escape_like_pattern(name_without_ext)
                 result = self.db.execute(
                     text("""
                         SELECT id FROM pokervod.video_files
-                        WHERE file_name LIKE :pattern
+                        WHERE file_name LIKE :pattern ESCAPE '\\'
                         LIMIT 1
                     """),
-                    {'pattern': name_without_ext + '%'}
+                    {'pattern': escaped_name + '%'}
                 ).first()
 
                 if result:
-                    self._path_cache[normalized] = result[0]
+                    self._cache_put(normalized, result[0])
                     return result[0]
 
         return None
@@ -364,6 +395,9 @@ class FuzzyMatcher:
     1. pg_trgm similarity() 함수로 후보군 필터링 (DB 레벨)
     2. TitleNormalizer로 제목 정규화
     3. 신뢰도 점수 기반 자동/수동 분류
+
+    필수 조건:
+    - PostgreSQL pg_trgm 확장이 설치되어 있어야 함
     """
 
     # 매칭 임계값
@@ -374,6 +408,34 @@ class FuzzyMatcher:
     def __init__(self, db: Session):
         self.db = db
         self._candidates_cache: Dict[str, List[Tuple]] = {}
+        self._pg_trgm_available: Optional[bool] = None
+
+    def _check_pg_trgm(self) -> bool:
+        """
+        pg_trgm 확장 사용 가능 여부 확인 (P0 Fix: 의존성 체크)
+
+        Returns:
+            True if pg_trgm is available, False otherwise
+        """
+        if self._pg_trgm_available is not None:
+            return self._pg_trgm_available
+
+        try:
+            result = self.db.execute(
+                text("SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'")
+            ).first()
+            self._pg_trgm_available = result is not None
+        except Exception as e:
+            logger.warning(f"Failed to check pg_trgm extension: {e}")
+            self._pg_trgm_available = False
+
+        if not self._pg_trgm_available:
+            logger.error(
+                "pg_trgm extension is not installed. "
+                "FuzzyMatcher requires: CREATE EXTENSION pg_trgm;"
+            )
+
+        return self._pg_trgm_available
 
     def find_best_match(self, clip_title: str) -> Optional[Dict]:
         """
@@ -393,6 +455,11 @@ class FuzzyMatcher:
             또는 매칭 없으면 None
         """
         if not clip_title:
+            return None
+
+        # P0 Fix: pg_trgm 의존성 체크
+        if not self._check_pg_trgm():
+            logger.warning("Skipping fuzzy match: pg_trgm not available")
             return None
 
         # 1. pg_trgm으로 후보군 검색

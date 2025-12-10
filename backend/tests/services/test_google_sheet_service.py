@@ -534,6 +534,101 @@ class TestFuzzyMatcher:
         assert results[2]['matched'] == False
 
 
+class TestSecurityFixes:
+    """보안 수정 테스트 (Issue #32 P0 Fixes)"""
+
+    @pytest.fixture
+    def mock_db_session(self):
+        return MagicMock()
+
+    def test_escape_like_pattern_escapes_percent(self):
+        """LIKE 패턴에서 % 이스케이프"""
+        from src.services.google_sheet_service import VideoFileMatcher
+
+        result = VideoFileMatcher._escape_like_pattern("test%file")
+        assert result == r"test\%file"
+
+    def test_escape_like_pattern_escapes_underscore(self):
+        """LIKE 패턴에서 _ 이스케이프"""
+        from src.services.google_sheet_service import VideoFileMatcher
+
+        result = VideoFileMatcher._escape_like_pattern("test_file")
+        assert result == r"test\_file"
+
+    def test_escape_like_pattern_escapes_backslash(self):
+        """LIKE 패턴에서 \\ 이스케이프"""
+        from src.services.google_sheet_service import VideoFileMatcher
+
+        result = VideoFileMatcher._escape_like_pattern(r"test\file")
+        assert result == r"test\\file"
+
+    def test_escape_like_pattern_handles_empty(self):
+        """빈 문자열 처리"""
+        from src.services.google_sheet_service import VideoFileMatcher
+
+        assert VideoFileMatcher._escape_like_pattern("") == ""
+        assert VideoFileMatcher._escape_like_pattern(None) is None
+
+    def test_escape_like_pattern_sql_injection_prevention(self):
+        """SQL Injection 공격 패턴 방어"""
+        from src.services.google_sheet_service import VideoFileMatcher
+
+        # SQL 와일드카드를 이용한 공격 패턴
+        malicious = "%' OR '1'='1"
+        result = VideoFileMatcher._escape_like_pattern(malicious)
+        # % 가 이스케이프되어 SQL injection 불가
+        assert result == r"\%' OR '1'='1"
+
+    def test_lru_cache_size_limit(self, mock_db_session):
+        """LRU 캐시 크기 제한 테스트"""
+        from src.services.google_sheet_service import VideoFileMatcher
+
+        matcher = VideoFileMatcher(mock_db_session)
+
+        # 캐시 크기 제한보다 많은 항목 추가
+        for i in range(matcher.MAX_CACHE_SIZE + 100):
+            matcher._cache_put(f"path_{i}", uuid4())
+
+        # 캐시 크기가 제한을 넘지 않아야 함
+        assert len(matcher._path_cache) <= matcher.MAX_CACHE_SIZE
+
+    def test_lru_cache_evicts_oldest(self, mock_db_session):
+        """LRU 캐시가 가장 오래된 항목을 제거하는지 테스트"""
+        from src.services.google_sheet_service import VideoFileMatcher
+
+        matcher = VideoFileMatcher(mock_db_session)
+        # 임시로 작은 캐시 크기 설정
+        original_max = matcher.MAX_CACHE_SIZE
+        matcher.MAX_CACHE_SIZE = 3
+
+        id1, id2, id3, id4 = uuid4(), uuid4(), uuid4(), uuid4()
+        matcher._cache_put("path_1", id1)
+        matcher._cache_put("path_2", id2)
+        matcher._cache_put("path_3", id3)
+
+        # 새 항목 추가 → path_1 제거되어야 함
+        matcher._cache_put("path_4", id4)
+
+        assert "path_1" not in matcher._path_cache
+        assert "path_4" in matcher._path_cache
+
+        # 원복
+        matcher.MAX_CACHE_SIZE = original_max
+
+    def test_fuzzy_matcher_checks_pg_trgm(self, mock_db_session):
+        """FuzzyMatcher가 pg_trgm 의존성을 체크하는지 테스트"""
+        from src.services.google_sheet_service import FuzzyMatcher
+
+        # pg_trgm 없음 Mock
+        mock_db_session.execute.return_value.first.return_value = None
+
+        matcher = FuzzyMatcher(mock_db_session)
+        result = matcher.find_best_match("Test Title")
+
+        # pg_trgm 없으면 None 반환
+        assert result is None
+
+
 class TestFuzzyMatcherIntegration:
     """FuzzyMatcher DB 통합 테스트 (실제 pg_trgm 사용)"""
 
