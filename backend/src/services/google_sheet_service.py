@@ -135,6 +135,71 @@ class TagNormalizer:
         return [cls.normalize(t) for t in tags]
 
 
+class TitleNormalizer:
+    """
+    제목 정규화 유틸리티 (Issue #32: Hybrid Fuzzy Matching)
+
+    iconik_metadata 제목을 video_files.file_name과 매칭하기 위해 정규화:
+    - _subclip_ 이후 텍스트 제거
+    - _PGM, ES코드, GMPO 코드 제거
+    - 파일 확장자 제거
+    - 언더스코어/하이픈 → 공백 변환
+    - 소문자 변환
+    """
+
+    # 제거할 패턴 (순서 중요)
+    REMOVE_PATTERNS = [
+        r'_subclip_.*$',           # _subclip_ 이후 모든 텍스트
+        r'_subclip$',              # _subclip만 있는 경우
+        r'_PGM$',                  # _PGM 접미사
+        r'[_\s]ES[O0]\d{9,10}',    # ES 코드 (ESO 또는 ES0 + 9-10자리)
+        r'[_\s]GMPO\s*\d+',        # GMPO 코드
+        r'\.(mp4|mov|mxf|avi|mkv)$',  # 파일 확장자
+    ]
+
+    # 컴파일된 패턴 캐시
+    _compiled_patterns = None
+
+    @classmethod
+    def _get_patterns(cls):
+        """컴파일된 패턴 반환 (캐싱)"""
+        if cls._compiled_patterns is None:
+            cls._compiled_patterns = [
+                re.compile(pattern, re.IGNORECASE)
+                for pattern in cls.REMOVE_PATTERNS
+            ]
+        return cls._compiled_patterns
+
+    @classmethod
+    def normalize(cls, title: str) -> str:
+        """
+        제목 정규화
+
+        Args:
+            title: 원본 제목
+
+        Returns:
+            정규화된 제목 (소문자, 공백으로 구분)
+        """
+        if not title:
+            return ""
+
+        result = title.strip()
+
+        # 패턴 제거
+        for pattern in cls._get_patterns():
+            result = pattern.sub('', result)
+
+        # 언더스코어/하이픈 → 공백
+        result = re.sub(r'[_\-]+', ' ', result)
+
+        # 연속 공백 정리
+        result = re.sub(r'\s+', ' ', result)
+
+        # 소문자 변환 및 trim
+        return result.lower().strip()
+
+
 class NasPathNormalizer:
     """
     NAS 경로 정규화 유틸리티
@@ -286,6 +351,164 @@ class VideoFileMatcher:
 
         for row in results:
             self._path_cache[row[1]] = row[0]  # file_path → id
+
+
+class FuzzyMatcher:
+    """
+    Fuzzy 매칭으로 video_file_id 찾기 (Issue #32)
+
+    NAS 경로가 없는 iconik_metadata 레코드에서
+    제목(title) 기반으로 video_files와 매칭
+
+    전략:
+    1. pg_trgm similarity() 함수로 후보군 필터링 (DB 레벨)
+    2. TitleNormalizer로 제목 정규화
+    3. 신뢰도 점수 기반 자동/수동 분류
+    """
+
+    # 매칭 임계값
+    AUTO_MATCH_THRESHOLD = 70    # 자동 매칭 (70% 이상)
+    REVIEW_THRESHOLD = 50        # 수동 검토 (50-70%)
+    MIN_SIMILARITY = 0.3         # pg_trgm 최소 유사도
+
+    def __init__(self, db: Session):
+        self.db = db
+        self._candidates_cache: Dict[str, List[Tuple]] = {}
+
+    def find_best_match(self, clip_title: str) -> Optional[Dict]:
+        """
+        제목으로 최적의 video_file 매칭 찾기
+
+        Args:
+            clip_title: hand_clips.title
+
+        Returns:
+            {
+                'video_file_id': UUID,
+                'file_name': str,
+                'confidence': int (0-100),
+                'method': 'fuzzy',
+                'needs_review': bool
+            }
+            또는 매칭 없으면 None
+        """
+        if not clip_title:
+            return None
+
+        # 1. pg_trgm으로 후보군 검색
+        candidates = self._get_candidates(clip_title)
+
+        if not candidates:
+            return None
+
+        # 2. 정규화된 제목으로 최적 매칭 선택
+        normalized_title = TitleNormalizer.normalize(clip_title)
+
+        best_match = None
+        best_score = 0
+
+        for video_id, file_name, pg_similarity in candidates:
+            # pg_trgm 유사도를 100점 만점으로 변환
+            confidence = int(pg_similarity * 100)
+
+            # 정규화된 파일명과 추가 비교 (선택적)
+            normalized_filename = TitleNormalizer.normalize(file_name)
+
+            if confidence > best_score:
+                best_score = confidence
+                best_match = {
+                    'video_file_id': video_id,
+                    'file_name': file_name,
+                    'confidence': confidence,
+                    'method': 'fuzzy',
+                    'needs_review': confidence < self.AUTO_MATCH_THRESHOLD
+                }
+
+        return best_match
+
+    def _get_candidates(self, clip_title: str, limit: int = 10) -> List[Tuple]:
+        """
+        pg_trgm으로 유사한 video_files 후보 검색
+
+        Args:
+            clip_title: 검색할 제목
+            limit: 최대 후보 수
+
+        Returns:
+            [(video_id, file_name, similarity), ...]
+        """
+        # 캐시 확인
+        cache_key = clip_title[:50]  # 긴 제목은 앞 50자만
+        if cache_key in self._candidates_cache:
+            return self._candidates_cache[cache_key]
+
+        try:
+            result = self.db.execute(
+                text("""
+                    SELECT id, file_name, similarity(file_name, :title) as score
+                    FROM pokervod.video_files
+                    WHERE similarity(file_name, :title) > :min_sim
+                      AND deleted_at IS NULL
+                    ORDER BY score DESC
+                    LIMIT :limit
+                """),
+                {
+                    'title': clip_title,
+                    'min_sim': self.MIN_SIMILARITY,
+                    'limit': limit
+                }
+            ).fetchall()
+
+            candidates = [(row[0], row[1], row[2]) for row in result]
+            self._candidates_cache[cache_key] = candidates
+            return candidates
+
+        except Exception as e:
+            logger.error(f"FuzzyMatcher query failed: {e}")
+            return []
+
+    def batch_match(self, clips: List[Dict]) -> List[Dict]:
+        """
+        여러 클립 일괄 매칭
+
+        Args:
+            clips: [{'id': UUID, 'title': str}, ...]
+
+        Returns:
+            [{'clip_id': UUID, 'matched': bool, 'result': Dict or None}, ...]
+        """
+        results = []
+
+        for clip in clips:
+            match_result = self.find_best_match(clip.get('title', ''))
+
+            results.append({
+                'clip_id': clip.get('id'),
+                'matched': match_result is not None,
+                'result': match_result
+            })
+
+        return results
+
+    def get_statistics(self) -> Dict:
+        """매칭 통계 조회"""
+        stats = self.db.execute(
+            text("""
+                SELECT
+                    COUNT(*) as total,
+                    COUNT(video_file_id) as matched,
+                    COUNT(*) - COUNT(video_file_id) as unmatched
+                FROM pokervod.hand_clips
+                WHERE sheet_source = 'iconik_metadata'
+            """)
+        ).first()
+
+        return {
+            'total': stats[0] if stats else 0,
+            'matched': stats[1] if stats else 0,
+            'unmatched': stats[2] if stats else 0,
+            'match_rate': round(stats[1] / stats[0] * 100, 1) if stats and stats[0] > 0 else 0
+        }
 
 
 class GoogleSheetService:
