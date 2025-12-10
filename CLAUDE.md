@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**버전**: 1.3.0 | **Context**: Windows, PowerShell
+**버전**: 1.4.0 | **Context**: Windows, PowerShell
 
 ---
 
@@ -219,9 +219,9 @@ gh pr create --title "fix: resolve issues #1-15" --body "Closes #1, #2, ..."
 | File Parser | ✅ 완료 | 7개 프로젝트 패턴 |
 | Backend API | ✅ 완료 | FastAPI 14개 엔드포인트 (port 9000) |
 | 파일 필터 | ✅ 완료 | is_hidden, hidden_reason |
-| 동기화 검수 | ✅ 완료 | Issue #23 - 폴더 트리, Sheets 뷰어 |
+| 동기화 검수 | ✅ 완료 | PR #24 - 폴더 트리, Sheets 뷰어 |
+| Catalog UI | ✅ 완료 | PR #27 - Netflix 스타일 카탈로그 |
 | Google Sheets | ⚠️ 미완 | 라이브러리만 설치 |
-| Catalog UI | ❌ 미구현 | 다음 작업 |
 | Block Agent | ❌ 미구현 | 50+ 파일 도달 시 재검토 |
 
 ---
@@ -233,7 +233,7 @@ gh pr create --title "fix: resolve issues #1-15" --body "Closes #1, #2, ..."
 ### 현재 브랜치
 
 ```
-fix/issue-23-sync-inspection (84853ff)
+main (최신)
 ```
 
 ### Docker 컨테이너 상태
@@ -241,31 +241,21 @@ fix/issue-23-sync-inspection (84853ff)
 | 서비스 | 포트 | 상태 |
 |--------|------|------|
 | pokervod-db | 5432 | ✅ healthy |
-| pokervod-api | **9000** | ✅ healthy |
-| pokervod-frontend | 3001 | ✅ healthy |
+| pokervod-api | 9000 | ✅ healthy |
+| pokervod-frontend | 8080 | ✅ healthy |
 
-### 완료된 작업
+### 최근 완료된 작업
 
-- [x] Issue #23: 동기화 데이터 검수 기능
-  - `/api/sync/tree` - NAS 폴더 트리 구조
-  - `/api/sync/sheets/preview` - Google Sheets 데이터 미리보기
-  - `/api/sync/scheduler` - APScheduler 상태 조회
-  - `DataBrowser.tsx` - 폴더 트리 뷰어 컴포넌트
-  - `SheetsViewer.tsx` - Sheets 데이터 뷰어 컴포넌트
-  - `Sync.tsx` - 탭 네비게이션 (status/files/sheets)
-
-### 미커밋 변경사항
-
-```
-src/agents/blocks/parser/parser_agent.py  (수정됨)
-tests/agents/test_parser_agent.py         (수정됨)
-```
+- [x] PR #24: 동기화 데이터 검수 기능 (Issue #23)
+- [x] PR #27: Catalog UI 구현 (Issue #26)
+- [x] Issue #25: HCL 파서 - 폴더만 있고 파일 없음 (won't fix)
+- [x] PR #19, #21: Block Agent 문서 PR 정리 (닫음)
 
 ### 다음 우선순위 작업
 
-1. **Catalog UI 구현** - Netflix 스타일 비디오 카탈로그
-2. **Google Sheets 동기화 완성** - 실제 연동 구현
-3. **검색 기능** - MeiliSearch 또는 PostgreSQL Full-text
+1. **Google Sheets 동기화 완성** - 실제 연동 구현
+2. **검색 기능** - MeiliSearch 또는 PostgreSQL Full-text
+3. **비디오 썸네일** - FFmpeg 기반 자동 생성
 
 ---
 
@@ -279,7 +269,7 @@ tests/agents/test_parser_agent.py         (수정됨)
 
 ---
 
-**문서 버전**: 1.3.0
+**문서 버전**: 1.4.0
 **작성일**: 2025-12-09
 **수정일**: 2025-12-10
 
@@ -287,6 +277,7 @@ tests/agents/test_parser_agent.py         (수정됨)
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|----------|
+| 1.4.0 | 2025-12-10 | Catalog UI 완료 반영, PR/Issue 정리 완료, 다음 작업 업데이트 |
 | 1.3.0 | 2025-12-10 | 개발 명령어 섹션 추가, 아키텍처 다이어그램 추가, 프로젝트 코드 테이블 추가 |
 | 1.2.0 | 2025-12-10 | 다음 세션 시작점 섹션 추가, Issue #23 완료 반영, API 포트 9000 변경 |
 | 1.1.0 | 2025-12-09 | Block Agent 도입 기준 추가, 현재 구현 상태 섹션 추가, 카탈로그 UI 방향 추가 |
