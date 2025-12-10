@@ -165,19 +165,28 @@ class GoogleSheetService:
     }
 
     # Sheet configurations - 실제 시트 ID (PRD 기준)
+    # Issue #28: 시트 이름 변경 및 iconik Metadata 보류
     SHEET_CONFIGS = {
-        'hand_analysis': SheetConfig(
+        # Metadata Archive (구 Hand Analysis) - 현재 사용
+        'metadata_archive': SheetConfig(
             sheet_id='1_RN_W_ZQclSZA0Iez6XniCXVtjkkd5HNZwiT6l-z6d4',
-            sheet_name='Hand Analysis',
-            source_type='hand_analysis',
+            sheet_name='Metadata Archive',
+            source_type='metadata_archive',
             column_mapping=HAND_ANALYSIS_COLUMNS,
         ),
-        'hand_database': SheetConfig(
-            sheet_id='1pUMPKe-OsKc-Xd8lH1cP9ctJO4hj3keXY5RwNFp2Mtk',
-            sheet_name='Hand Database',
-            source_type='hand_database',
-            column_mapping=HAND_DATABASE_COLUMNS,
-        ),
+        # iconik Metadata (구 Hand Database) - 사용 보류
+        # 'iconik_metadata': SheetConfig(
+        #     sheet_id='1pUMPKe-OsKc-Xd8lH1cP9ctJO4hj3keXY5RwNFp2Mtk',
+        #     sheet_name='iconik Metadata',
+        #     source_type='iconik_metadata',
+        #     column_mapping=HAND_DATABASE_COLUMNS,
+        # ),
+    }
+
+    # Legacy aliases for backward compatibility
+    LEGACY_SHEET_ALIASES = {
+        'hand_analysis': 'metadata_archive',
+        'hand_database': 'iconik_metadata',  # 보류됨
     }
 
     def __init__(self, db: Session, credentials_path: Optional[str] = None):

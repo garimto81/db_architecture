@@ -1,8 +1,18 @@
 /**
  * Sync Page - 동기화 상세 페이지
  * BLOCK_FRONTEND / FrontendAgent
- * Updated for Issue #23: 동기화 데이터 검수 기능
+ *
+ * @version 1.5.0
+ * @updated 2025-12-10
+ * @changes Issue #28: Sheets 탭 DB 매핑 뷰 연결 (HandClipsInfiniteList)
  */
+
+// 페이지 버전 정보 (UI 하단에 표시)
+const PAGE_VERSION = {
+  version: '1.5.0',
+  updated: '2025-12-10',
+  changes: 'Issue #28: Sheets DB 매핑 뷰, NAS 전체 하이어라키',
+};
 
 import { Card, Button, Badge, ProgressBar } from '../components/common';
 import { DataBrowser, SheetsViewer } from '../components/sync';
@@ -60,6 +70,14 @@ export function Sync() {
       <div>
         <h2 className="text-2xl font-bold text-gray-900">Sync Management</h2>
         <p className="text-gray-500 mt-1">동기화 상태 관리 및 데이터 검수</p>
+        <div className="mt-2 text-xs text-gray-400 flex items-center gap-2">
+          <span className="bg-gray-100 px-2 py-0.5 rounded">
+            📋 v{PAGE_VERSION.version}
+          </span>
+          <span>{PAGE_VERSION.updated}</span>
+          <span className="text-gray-300">|</span>
+          <span>{PAGE_VERSION.changes}</span>
+        </div>
       </div>
 
       {/* Tab Navigation */}
@@ -248,6 +266,7 @@ export function Sync() {
       </Card>
         </>
       )}
+
     </div>
   );
 }

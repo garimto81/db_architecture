@@ -63,4 +63,52 @@ export const getWsUrl = (path: string): string => {
   return `${protocol}//${window.location.host}${path}`;
 };
 
+// ============== Issue #28: Infinite Scroll API Functions ==============
+
+import type { CursorPaginatedResponse, VideoFileResponse, HandClipResponse } from '../types/sync';
+
+/**
+ * NAS 비디오 파일 목록 조회 (Cursor 페이지네이션)
+ * @param cursor - 다음 페이지 커서 (null = 첫 페이지)
+ * @param project - 프로젝트 필터 (선택)
+ * @param limit - 페이지당 항목 수 (기본: 20)
+ */
+export async function fetchVideoFiles(
+  cursor: string | null = null,
+  project?: string,
+  limit: number = 20
+): Promise<CursorPaginatedResponse<VideoFileResponse>> {
+  const params = new URLSearchParams();
+  if (cursor) params.set('cursor', cursor);
+  if (project) params.set('project', project);
+  params.set('limit', String(limit));
+
+  const response = await apiClient.get<CursorPaginatedResponse<VideoFileResponse>>(
+    `/api/sync/files/cursor?${params}`
+  );
+  return response.data;
+}
+
+/**
+ * Hand Clips 목록 조회 (Cursor 페이지네이션)
+ * @param cursor - 다음 페이지 커서 (null = 첫 페이지)
+ * @param source - 시트 소스 필터 (선택)
+ * @param limit - 페이지당 항목 수 (기본: 20)
+ */
+export async function fetchHandClipsCursor(
+  cursor: string | null = null,
+  source?: string,
+  limit: number = 20
+): Promise<CursorPaginatedResponse<HandClipResponse>> {
+  const params = new URLSearchParams();
+  if (cursor) params.set('cursor', cursor);
+  if (source) params.set('source', source);
+  params.set('limit', String(limit));
+
+  const response = await apiClient.get<CursorPaginatedResponse<HandClipResponse>>(
+    `/api/sync/hand-clips/cursor?${params}`
+  );
+  return response.data;
+}
+
 export default apiClient;

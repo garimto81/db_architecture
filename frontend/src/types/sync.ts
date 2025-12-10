@@ -178,3 +178,62 @@ export interface SchedulerStatusResponse {
   next_nas_sync: string | null;
   next_sheets_sync: string | null;
 }
+
+// ============== Hand Clips 검증 Types ==============
+
+// Hand Clip 개별 응답
+export interface HandClipResponse {
+  id: string;
+  sheet_source: string;
+  sheet_row_number: number;
+  title: string | null;
+  timecode: string | null;
+  notes: string | null;
+  hand_grade: string | null;
+  created_at: string;
+}
+
+// Hand Clips 목록 응답 (페이지네이션)
+export interface HandClipsListResponse {
+  items: HandClipResponse[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+// Hand Clips 요약 응답
+export interface HandClipsSummaryResponse {
+  total_clips: number;
+  by_source: Record<string, number>;
+  latest_sync: string | null;
+  sample_clips: HandClipResponse[];
+}
+
+// ============== Issue #28: Cursor-based Pagination Types ==============
+
+// Cursor 페이지네이션 응답 (제네릭)
+export interface CursorPaginatedResponse<T> {
+  items: T[];
+  next_cursor: string | null;
+  has_more: boolean;
+  total: number;
+}
+
+// NAS 비디오 파일 응답
+export interface VideoFileResponse {
+  id: string;
+  file_path: string;
+  file_name: string;
+  file_size_bytes: number;
+  resolution: string | null;
+  version_type: string | null;
+  display_title: string | null;
+  catalog_title: string | null;
+  episode_title: string | null;
+  scan_status: string;
+  is_hidden: boolean;
+  hidden_reason: string | null;
+  created_at: string;
+  project_name?: string;
+}

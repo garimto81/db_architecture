@@ -143,7 +143,11 @@ WCLA24-15.mp4
 
 ### 2.3 Google Sheets 데이터 구조
 
-#### Sheet 1: 핸드 분석 시트 (WSOP Circuit)
+> **Issue #28 변경사항**: 시트 이름 변경
+> - Hand Analysis → **Metadata Archive** (활성)
+> - Hand Database → **iconik Metadata** (사용 보류)
+
+#### Sheet 1: Metadata Archive (구 핸드 분석 시트, WSOP Circuit)
 | 컬럼명 | 설명 | 예시 |
 |--------|------|------|
 | File No. | 일련번호 | 1, 2, 3... |
@@ -158,7 +162,7 @@ WCLA24-15.mp4
 | Tag 1~7 (PokerPlay) | 포커 플레이 태그 | Preflop All-in, Cooler, Bad Beat |
 | Tag 1~2 (Emotion) | 감정 태그 | Stressed, Excitement |
 
-#### Sheet 2: 핸드 데이터베이스 (통합)
+#### Sheet 2: iconik Metadata (구 핸드 데이터베이스, 사용 보류)
 | 컬럼명 | 설명 | 예시 |
 |--------|------|------|
 | id | UUID | 550e8400-e29b-41d4... |
@@ -709,10 +713,13 @@ adjective (5개):
 ```
 
 ### 6.2 Google Sheets 연동
-| 시트 ID | 용도 | 설명 |
-|---------|------|------|
-| 1_RN_W_ZQclSZA0Iez6XniCXVtjkkd5HNZwiT6l-z6d4 | 핸드 분석 시트 | WSOP Circuit 핸드 분석 (38건) |
-| 1pUMPKe-OsKc-Xd8lH1cP9ctJO4hj3keXY5RwNFp2Mtk | 핸드 데이터베이스 | 통합 핸드 메타데이터 |
+
+> **Issue #28**: iconik Metadata 사용 보류, Metadata Archive만 활성
+
+| 시트 ID | 시트명 | 상태 | 설명 |
+|---------|--------|------|------|
+| 1_RN_W_ZQclSZA0Iez6XniCXVtjkkd5HNZwiT6l-z6d4 | **Metadata Archive** | ✅ 활성 | WSOP Circuit 핸드 분석 (38건) |
+| 1pUMPKe-OsKc-Xd8lH1cP9ctJO4hj3keXY5RwNFp2Mtk | iconik Metadata | ⏸️ 보류 | 통합 핸드 메타데이터 (추후 활성화) |
 
 ---
 
@@ -1013,12 +1020,12 @@ schedules:
       enabled: true
 
   sheet_sync:
-    - sheet: hand_analysis
-      cron: "0 * * * *"        # 1시간마다
+    - sheet: metadata_archive    # Issue #28: 시트 이름 변경
+      cron: "0 * * * *"          # 1시간마다
       enabled: true
-    - sheet: hand_database
-      cron: "0 * * * *"        # 1시간마다
-      enabled: true
+    - sheet: iconik_metadata     # Issue #28: 사용 보류
+      cron: "0 * * * *"          # 1시간마다
+      enabled: false             # 추후 활성화
 
   full_validation:
     cron: "0 4 * * 0"          # 매주 일요일 04:00
@@ -1213,10 +1220,201 @@ WHERE vf.id IS NULL;
 
 ---
 
-**문서 버전**: 5.1
+## 12. 개발 지침 (Development Guidelines)
+
+### 12.1 API 파라미터 동기화 규칙
+
+> **Issue #28 교훈**: 백엔드 기본값을 변경해도 프론트엔드에서 하드코딩된 값을 보내면 무시됩니다.
+
+#### 12.1.1 문제 사례
+
+```
+❌ 잘못된 패턴 (버그 발생)
+─────────────────────────────────────────────
+Backend (sync.py):
+  max_depth: int = Query(15, ...)  # 기본값 15로 변경
+
+Frontend (DataBrowser.tsx):
+  params.set('max_depth', '5');    # 여전히 5를 보냄 → 백엔드 기본값 무시!
+
+결과: 폴더 하이어라키가 5단계에서 끊김
+```
+
+#### 12.1.2 올바른 패턴
+
+| 패턴 | 설명 | 사용 시점 |
+|------|------|----------|
+| **백엔드 기본값 위임** | 프론트엔드에서 파라미터를 보내지 않음 | 백엔드가 마스터일 때 |
+| **양쪽 동기화** | 백엔드와 프론트엔드에서 동일한 값 설정 | 명시적 값이 필요할 때 |
+| **설정 파일 공유** | 공통 상수 파일에서 값 참조 | 다중 클라이언트 지원 시 |
+
+```typescript
+// ✅ 올바른 패턴 1: 백엔드 기본값 위임
+async function fetchFolderTree(projectCode?: string) {
+  const params = new URLSearchParams();
+  if (projectCode) params.set('project_code', projectCode);
+  // max_depth를 보내지 않으면 백엔드 기본값(15) 사용
+  return apiClient.get(`/api/sync/tree?${params}`);
+}
+
+// ✅ 올바른 패턴 2: 양쪽 동기화 (주석으로 명시)
+// sync.py: max_depth = Query(15, ge=1, le=20)
+params.set('max_depth', '15');  // ⚠️ 백엔드와 동일하게 유지할 것
+```
+
+#### 12.1.3 체크리스트
+
+백엔드 API 파라미터 기본값 변경 시:
+
+- [ ] **프론트엔드 검색**: 해당 파라미터를 사용하는 모든 fetch 함수 확인
+- [ ] **하드코딩 확인**: `params.set()`, `?param=value` 형태의 하드코딩 검색
+- [ ] **동기화 또는 제거**: 프론트엔드 값을 백엔드와 동기화하거나 제거
+- [ ] **주석 추가**: 양쪽 동기화 시 상호 참조 주석 필수
+
+```bash
+# 파라미터 하드코딩 검색 명령어
+grep -rn "max_depth" frontend/src/
+grep -rn "params.set" frontend/src/ | grep -E "'[a-z_]+'"
+```
+
+### 12.2 프론트엔드 페이지 버전 관리
+
+#### 12.2.1 필수 표기 규칙
+
+모든 프론트엔드 페이지 수정 시:
+
+1. **파일 상단 JSDoc 업데이트**
+   ```tsx
+   /**
+    * @version 1.1.0
+    * @updated 2025-12-10
+    * @changes Issue #28: max_depth 15로 변경
+    */
+   ```
+
+2. **PAGE_VERSION 상수 업데이트** (페이지 컴포넌트만)
+   ```tsx
+   const PAGE_VERSION = {
+     version: '1.4.0',
+     updated: '2025-12-10',
+     changes: 'Issue #28: NAS 전체 하이어라키',
+   };
+   ```
+
+3. **페이지 제목 아래 버전 표시**
+   ```tsx
+   <div className="mt-2 text-xs text-gray-400">
+     📋 v{PAGE_VERSION.version} | {PAGE_VERSION.updated} | {PAGE_VERSION.changes}
+   </div>
+   ```
+
+#### 12.2.2 버전 표기 위치
+
+| 컴포넌트 유형 | JSDoc | PAGE_VERSION | UI 표시 |
+|--------------|-------|--------------|---------|
+| 페이지 (pages/) | ✅ | ✅ | ✅ |
+| 컴포넌트 (components/) | ✅ | ❌ | ❌ |
+| 훅 (hooks/) | ✅ | ❌ | ❌ |
+| 서비스 (services/) | ✅ | ❌ | ❌ |
+
+### 12.3 UI 목업 디자인
+
+#### 12.3.1 Sheets 데이터 탭 - DB 매핑 뷰
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 🎬 Hand Clips 상세 목록 - DB 연동 뷰                                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  시트 소스 필터                                      매핑 다이어그램        │
+│  ┌────────────────────────────┐                     ┌──────────┐           │
+│  │ 전체 소스               ▼  │                     │ ✓ 표시   │           │
+│  └────────────────────────────┘                     └──────────┘           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 🔗 Google Sheets → DB 매핑 구조                                              │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐             │
+│  │ A (Title)       │  │ B (Timecode)    │  │ C (Notes)       │             │
+│  │       ↓         │  │       ↓         │  │       ↓         │             │
+│  │ 🔵 hand_clips.  │  │ 🟢 hand_clips.  │  │ 🟣 hand_clips.  │             │
+│  │    title        │  │    timecode     │  │    notes        │             │
+│  │ VARCHAR(500)    │  │ VARCHAR         │  │ TEXT            │             │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘             │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐             │
+│  │ D (Grade)       │  │ 행 번호         │  │ Sheet ID        │             │
+│  │       ↓         │  │       ↓         │  │       ↓         │             │
+│  │ 🟡 hand_clips.  │  │ ⚫ hand_clips.  │  │ 🟠 hand_clips.  │             │
+│  │    hand_grade   │  │ sheet_row_number│  │    sheet_source │             │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  전체 2,490개 중 20개 표시                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌───────────────────────────────────────────────────────────────────────┐ │
+│  │ ┌─────────────────┐                                        방금 전    │ │
+│  │ │Metadata Archive │  Row #42                                          │ │
+│  │ └─────────────────┘                                                   │ │
+│  │                                                                       │ │
+│  │ WSOP 2024 ME Final Table - Pocket Aces vs Kings                      │ │
+│  │                                                                       │ │
+│  │ 🕐 01:23:45                    ⭐ A+                                  │ │
+│  │                                                                       │ │
+│  │ ┌─────────────────────────────────────────────────────────────────┐  │ │
+│  │ │ 📝 This is a perfect example of value betting on the river     │  │ │
+│  │ │    with the nuts against a calling station.                    │  │ │
+│  │ └─────────────────────────────────────────────────────────────────┘  │ │
+│  │                                                                       │ │
+│  │ ─────────────────────────────────────────────────────────────────── │ │
+│  │ 📍 DB 매핑 정보                                                      │ │
+│  │ id: 8f3a2b1c...                                                      │ │
+│  │ 🔵 hand_clips.title: "WSOP 2024 ME Final Table - Pocket Aces..."    │ │
+│  │ 🟢 hand_clips.timecode: "01:23:45"                                   │ │
+│  │ 🟡 hand_clips.hand_grade: "A+"                                       │ │
+│  └───────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│                              ⟳ 로딩 중...                                  │
+│                         (스크롤 시 자동 로드 - 무한 스크롤)                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**컬러 코드 범례**:
+
+| 색상 | DB 컬럼 | 설명 |
+|------|---------|------|
+| 🔵 파란색 | `hand_clips.title` | 클립 제목 |
+| 🟢 초록색 | `hand_clips.timecode` | 타임코드 (In) |
+| 🟣 보라색 | `hand_clips.notes` | 메모/설명 |
+| 🟡 노란색 | `hand_clips.hand_grade` | 핸드 등급 (S, A+, A, B 등) |
+| ⚫ 회색 | `hand_clips.sheet_row_number` | 원본 시트 행 번호 |
+| 🟠 주황색 | `hand_clips.sheet_source` | 시트 소스 (metadata_archive) |
+
+**구현 컴포넌트**: `HandClipsInfiniteList.tsx`
+- 상단: `DbMappingDiagram` - 매핑 구조 시각화 (토글 가능)
+- 카드: `HandClipCard` - 각 클립 상세 + DB 컬럼값 컬러 표시
+- 무한 스크롤: `InfiniteScrollList` - cursor-based pagination
+
+### 12.4 반복 오류 방지 패턴
+
+#### 12.4.1 백엔드-프론트엔드 연동 시
+
+| 오류 패턴 | 예방책 |
+|----------|--------|
+| API 파라미터 불일치 | 변경 시 양쪽 grep 검색 필수 |
+| 타입 불일치 | TypeScript interface 공유 또는 OpenAPI 생성 |
+| 엔드포인트 변경 | 상수 파일에 URL 정의, 직접 문자열 금지 |
+| 응답 구조 변경 | 버전 관리 또는 하위 호환성 유지 |
+
+#### 12.4.2 Docker 빌드 시
+
+| 오류 패턴 | 예방책 |
+|----------|--------|
+| 프론트엔드 변경 미반영 | `npm run build` 후 docker-compose up |
+| 캐시 이슈 | `docker-compose build --no-cache` |
+| 볼륨 마운트 이슈 | 개발/프로덕션 볼륨 분리 |
+
+---
+
+**문서 버전**: 5.4
 **작성일**: 2025-12-09
 **작성자**: AI Assistant
-**상태**: Docker 기반 자동 동기화 시스템 설계 완료
+**상태**: Docker 기반 자동 동기화 시스템 설계 완료, 시트 이름 변경 (Metadata Archive 활성, iconik Metadata 보류)
 
 ### 변경 이력
 | 버전 | 날짜 | 변경 내용 |
@@ -1227,4 +1425,7 @@ WHERE vf.id IS NULL;
 | 3.1 | 2025-12-09 | NAS 폴더 구조 상세 분석, GOG 프로젝트 추가 |
 | 4.0 | 2025-12-09 | 스키마 대폭 개선: Project/Season/Event/VideoFile/Tag enum 확장, archive-analyzer 통합 전략 |
 | 5.0 | 2025-12-09 | 자동 동기화 시스템 추가: 신규 테이블 4개, 증분 스캔/동기화, 충돌 해결, 모니터링 |
-| **5.1** | **2025-12-09** | **Docker 기반 아키텍처**: (1) docker-compose.yml 추가 (postgres, redis, sync-worker), (2) 동기화 주기 1시간으로 통일, (3) Dockerfile.sync 추가, (4) Docker 운영 명령어 섹션 추가, (5) 환경변수 기반 설정 |
+| 5.1 | 2025-12-09 | Docker 기반 아키텍처: docker-compose.yml, Dockerfile.sync, 환경변수 기반 설정 |
+| 5.2 | 2025-12-10 | 개발 지침 섹션 추가: API 파라미터 동기화 규칙, 프론트엔드 버전 관리, 반복 오류 방지 패턴 |
+| 5.3 | 2025-12-10 | UI 목업 디자인 추가: Sheets 데이터 탭 - DB 매핑 뷰 (HandClipsInfiniteList, DbMappingDiagram, 컬러 코드 범례) |
+| **5.4** | **2025-12-10** | **시트 이름 변경**: Hand Analysis → Metadata Archive (활성), Hand Database → iconik Metadata (보류) |

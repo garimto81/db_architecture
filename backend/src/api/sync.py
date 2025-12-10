@@ -206,9 +206,10 @@ def sync_nas_background(
 
 class SheetSyncRequest(BaseModel):
     """Request to sync Google Sheets"""
+    # Issue #28: iconik_metadata 보류, metadata_archive만 사용
     sheet_keys: List[str] = Field(
-        default=["hand_analysis", "hand_database"],
-        description="Sheet keys to sync"
+        default=["metadata_archive"],
+        description="Sheet keys to sync (metadata_archive)"
     )
     limit: Optional[int] = Field(
         default=None,
@@ -253,7 +254,7 @@ def sync_sheets(
     Syncs hand clip data from configured Google Sheets.
     Uses incremental sync based on row numbers.
 
-    **Available sheet keys**: hand_analysis, hand_database
+    **Available sheet keys**: metadata_archive (iconik_metadata는 보류)
     """
     service = GoogleSheetService(db)
     results = {}
@@ -293,9 +294,10 @@ def sync_single_sheet(
     """
     Synchronize a single Google Sheet.
 
-    **Valid sheet keys**: hand_analysis, hand_database
+    **Valid sheet keys**: metadata_archive (iconik_metadata는 보류)
     """
-    valid_keys = ["hand_analysis", "hand_database"]
+    # Issue #28: iconik_metadata 보류
+    valid_keys = ["metadata_archive"]
     if sheet_key not in valid_keys:
         raise HTTPException(
             status_code=400,
@@ -587,7 +589,8 @@ async def _run_sheets_sync_with_broadcast(sync_id: str, db: Session):
         await broadcast_sync_start(sync_id, "sheets", "manual")
 
         service = GoogleSheetService(db)
-        sheet_keys = ["hand_analysis", "hand_database"]
+        # Issue #28: iconik_metadata 보류, metadata_archive만 사용
+        sheet_keys = ["metadata_archive"]
 
         total_processed = 0
         total_new = 0
@@ -805,7 +808,7 @@ class SchedulerStatusResponse(BaseModel):
 def _build_folder_tree(
     db: Session,
     project_code: Optional[str] = None,
-    max_depth: int = 5
+    max_depth: int = 15
 ) -> Dict[str, Any]:
     """
     VideoFile.file_path에서 폴더 트리 구조 생성.
@@ -941,7 +944,7 @@ def _build_folder_tree(
 @router.get("/tree", response_model=FolderTreeResponse)
 def get_folder_tree(
     project_code: Optional[str] = Query(None, description="필터링할 프로젝트 코드"),
-    max_depth: int = Query(5, ge=1, le=10, description="최대 트리 깊이"),
+    max_depth: int = Query(15, ge=1, le=20, description="최대 트리 깊이 (기본 15)"),
     db: Session = Depends(get_db),
 ) -> FolderTreeResponse:
     """
@@ -972,18 +975,20 @@ def get_sheets_preview(
     sheets = {}
     total_rows = 0
 
-    # Get configured sheets info
+    # Get configured sheets info (실제 시트 ID 사용)
+    # Issue #28: 시트 이름 변경 - iconik Metadata 보류, Metadata Archive만 사용
     sheet_configs = {
-        'hand_analysis': {
-            'sheet_id': '1ABC...XYZ',
-            'sheet_name': 'Hand Analysis',
-            'source_type': 'hand_analysis',
+        'metadata_archive': {
+            'sheet_id': '1_RN_W_ZQclSZA0Iez6XniCXVtjkkd5HNZwiT6l-z6d4',
+            'sheet_name': 'Metadata Archive',
+            'source_type': 'metadata_archive',
         },
-        'hand_database': {
-            'sheet_id': '1DEF...UVW',
-            'sheet_name': 'Hand Database',
-            'source_type': 'hand_database',
-        },
+        # iconik Metadata - 사용 보류
+        # 'iconik_metadata': {
+        #     'sheet_id': '1pUMPKe-OsKc-Xd8lH1cP9ctJO4hj3keXY5RwNFp2Mtk',
+        #     'sheet_name': 'iconik Metadata',
+        #     'source_type': 'iconik_metadata',
+        # },
     }
 
     for key, config in sheet_configs.items():
@@ -1109,4 +1114,386 @@ def get_scheduler_status_for_sync() -> SchedulerStatusResponse:
         jobs=jobs,
         next_nas_sync=next_nas_sync,
         next_sheets_sync=next_sheets_sync,
+    )
+
+
+# ============== Hand Clips Verification API ==============
+# 동기화 결과 검증을 위한 hand_clips 조회 API
+
+class HandClipResponse(BaseModel):
+    """단일 hand clip 응답"""
+    id: str
+    sheet_source: str
+    sheet_row_number: int
+    title: Optional[str] = None
+    timecode: Optional[str] = None
+    notes: Optional[str] = None
+    hand_grade: Optional[str] = None
+    created_at: str
+
+
+class HandClipsListResponse(BaseModel):
+    """hand_clips 목록 응답"""
+    items: List[HandClipResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class HandClipsSummaryResponse(BaseModel):
+    """hand_clips 요약 통계"""
+    total_clips: int
+    by_source: Dict[str, int]
+    latest_sync: Optional[str] = None
+    sample_clips: List[HandClipResponse]
+
+
+# ============== Cursor-based Pagination Schemas ==============
+
+class CursorPaginatedResponse(BaseModel):
+    """Cursor 기반 페이지네이션 응답"""
+    items: List[Any]
+    next_cursor: Optional[str] = None
+    has_more: bool = False
+    total: int
+
+
+class VideoFileResponse(BaseModel):
+    """비디오 파일 응답"""
+    id: str
+    file_path: str
+    file_name: str
+    file_size_bytes: Optional[int] = None
+    resolution: Optional[str] = None
+    version_type: Optional[str] = None
+    display_title: Optional[str] = None
+    catalog_title: Optional[str] = None
+    episode_title: Optional[str] = None
+    scan_status: str
+    is_hidden: bool
+    hidden_reason: Optional[str] = None
+    created_at: str
+
+
+class VideoFilesCursorResponse(BaseModel):
+    """비디오 파일 cursor 페이지네이션 응답"""
+    items: List[VideoFileResponse]
+    next_cursor: Optional[str] = None
+    has_more: bool = False
+    total: int
+
+
+class HandClipsCursorResponse(BaseModel):
+    """hand_clips cursor 페이지네이션 응답"""
+    items: List[HandClipResponse]
+    next_cursor: Optional[str] = None
+    has_more: bool = False
+    total: int
+
+
+# ============== Video Files Cursor Pagination API ==============
+
+@router.get("/video-files", response_model=VideoFilesCursorResponse)
+def get_video_files(
+    project_code: Optional[str] = Query(None, description="프로젝트 코드 필터"),
+    scan_status: Optional[str] = Query(None, description="스캔 상태 필터"),
+    is_hidden: Optional[bool] = Query(None, description="숨김 여부 필터"),
+    cursor: Optional[str] = Query(None, description="마지막 항목 ID (다음 페이지)"),
+    limit: int = Query(20, ge=1, le=100, description="페이지 크기"),
+    db: Session = Depends(get_db),
+) -> VideoFilesCursorResponse:
+    """
+    비디오 파일 cursor 기반 페이지네이션 조회.
+
+    cursor 기반 페이지네이션으로 대량 데이터를 효율적으로 조회합니다.
+    - offset 대신 last_id 사용
+    - 필터: project_code, scan_status, is_hidden
+    - next_cursor로 다음 페이지 요청
+
+    **project_code**: WSOP, GGMILLIONS, MPP, PAD, GOG, HCL
+    **scan_status**: pending, completed, error
+    """
+    from src.models.video_file import VideoFile
+    from sqlalchemy import select, func
+
+    # Build base query
+    query = select(VideoFile).where(VideoFile.deleted_at.is_(None))
+
+    # Apply filters
+    if project_code:
+        query = query.where(VideoFile.file_path.ilike(f'%{project_code}%'))
+    if scan_status:
+        query = query.where(VideoFile.scan_status == scan_status)
+    if is_hidden is not None:
+        query = query.where(VideoFile.is_hidden == is_hidden)
+
+    # Cursor pagination
+    if cursor:
+        query = query.where(VideoFile.id > uuid.UUID(cursor))
+
+    # Get total count (without cursor filter)
+    count_query = select(func.count(VideoFile.id)).where(VideoFile.deleted_at.is_(None))
+    if project_code:
+        count_query = count_query.where(VideoFile.file_path.ilike(f'%{project_code}%'))
+    if scan_status:
+        count_query = count_query.where(VideoFile.scan_status == scan_status)
+    if is_hidden is not None:
+        count_query = count_query.where(VideoFile.is_hidden == is_hidden)
+
+    total = db.execute(count_query).scalar() or 0
+
+    # Order by id and limit
+    query = query.order_by(VideoFile.id).limit(limit + 1)
+
+    # Execute query
+    results = db.execute(query).scalars().all()
+
+    # Check if there are more items
+    has_more = len(results) > limit
+    items = results[:limit]
+
+    # Generate next cursor
+    next_cursor = None
+    if has_more and items:
+        next_cursor = str(items[-1].id)
+
+    # Convert to response format
+    response_items = [
+        VideoFileResponse(
+            id=str(item.id),
+            file_path=item.file_path,
+            file_name=item.file_name,
+            file_size_bytes=item.file_size_bytes,
+            resolution=item.resolution,
+            version_type=item.version_type,
+            display_title=item.display_title,
+            catalog_title=item.catalog_title,
+            episode_title=item.episode_title,
+            scan_status=item.scan_status,
+            is_hidden=item.is_hidden,
+            hidden_reason=item.hidden_reason,
+            created_at=item.created_at.isoformat() if item.created_at else "",
+        )
+        for item in items
+    ]
+
+    return VideoFilesCursorResponse(
+        items=response_items,
+        next_cursor=next_cursor,
+        has_more=has_more,
+        total=total,
+    )
+
+
+@router.get("/hand-clips", response_model=HandClipsListResponse)
+def get_hand_clips(
+    source: Optional[str] = Query(None, description="시트 소스 필터 (metadata_archive)"),
+    page: int = Query(1, ge=1, description="페이지 번호"),
+    page_size: int = Query(20, ge=1, le=100, description="페이지 크기"),
+    db: Session = Depends(get_db),
+) -> HandClipsListResponse:
+    """
+    동기화된 hand_clips 데이터 조회 (페이지네이션).
+
+    Google Sheets에서 동기화된 핸드 클립 데이터를 조회합니다.
+    사용자가 직접 동기화 결과를 검증할 수 있습니다.
+
+    **source**: metadata_archive (iconik_metadata는 보류)
+    """
+    from sqlalchemy import text
+
+    # Build query
+    where_clause = "WHERE 1=1"
+    params: Dict[str, Any] = {'offset': (page - 1) * page_size, 'limit': page_size}
+
+    if source:
+        where_clause += " AND sheet_source = :source"
+        params['source'] = source
+
+    # Get total count
+    count_query = f"SELECT COUNT(*) FROM pokervod.hand_clips {where_clause}"
+    total = db.execute(text(count_query.replace(" AND sheet_source = :source", " AND sheet_source = :source" if source else "")), params).scalar() or 0
+
+    # Get items
+    items_query = f"""
+        SELECT id, sheet_source, sheet_row_number, title, timecode, notes, hand_grade, created_at
+        FROM pokervod.hand_clips
+        {where_clause}
+        ORDER BY created_at DESC
+        OFFSET :offset LIMIT :limit
+    """
+    rows = db.execute(text(items_query), params).all()
+
+    items = [
+        HandClipResponse(
+            id=str(row[0]),
+            sheet_source=row[1],
+            sheet_row_number=row[2],
+            title=row[3],
+            timecode=row[4],
+            notes=row[5],
+            hand_grade=row[6],
+            created_at=row[7].isoformat() if row[7] else "",
+        )
+        for row in rows
+    ]
+
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+
+    return HandClipsListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
+
+
+@router.get("/hand-clips/cursor", response_model=HandClipsCursorResponse)
+def get_hand_clips_cursor(
+    source: Optional[str] = Query(None, description="시트 소스 필터 (metadata_archive)"),
+    cursor: Optional[str] = Query(None, description="마지막 항목 ID (다음 페이지)"),
+    limit: int = Query(20, ge=1, le=100, description="페이지 크기"),
+    db: Session = Depends(get_db),
+) -> HandClipsCursorResponse:
+    """
+    hand_clips cursor 기반 페이지네이션 조회.
+
+    기존 offset 기반 페이지네이션에서 cursor 기반으로 변경된 버전입니다.
+    대량 데이터 조회 시 성능이 우수합니다.
+
+    **source**: metadata_archive (iconik_metadata는 보류)
+    """
+    from sqlalchemy import text
+
+    # Build WHERE clause
+    where_parts = ["1=1"]
+    params: Dict[str, Any] = {'limit': limit + 1}
+
+    if source:
+        where_parts.append("sheet_source = :source")
+        params['source'] = source
+
+    if cursor:
+        where_parts.append("id > :cursor")
+        params['cursor'] = uuid.UUID(cursor)
+
+    where_clause = " AND ".join(where_parts)
+
+    # Get total count (for informational purposes)
+    count_where = "1=1"
+    count_params: Dict[str, Any] = {}
+    if source:
+        count_where = "sheet_source = :source"
+        count_params['source'] = source
+
+    total = db.execute(
+        text(f"SELECT COUNT(*) FROM pokervod.hand_clips WHERE {count_where}"),
+        count_params
+    ).scalar() or 0
+
+    # Get items with cursor
+    items_query = f"""
+        SELECT id, sheet_source, sheet_row_number, title, timecode, notes, hand_grade, created_at
+        FROM pokervod.hand_clips
+        WHERE {where_clause}
+        ORDER BY id
+        LIMIT :limit
+    """
+    rows = db.execute(text(items_query), params).all()
+
+    # Check if there are more items
+    has_more = len(rows) > limit
+    items_data = rows[:limit]
+
+    # Generate next cursor
+    next_cursor = None
+    if has_more and items_data:
+        next_cursor = str(items_data[-1][0])
+
+    # Convert to response format
+    items = [
+        HandClipResponse(
+            id=str(row[0]),
+            sheet_source=row[1],
+            sheet_row_number=row[2],
+            title=row[3],
+            timecode=row[4],
+            notes=row[5],
+            hand_grade=row[6],
+            created_at=row[7].isoformat() if row[7] else "",
+        )
+        for row in items_data
+    ]
+
+    return HandClipsCursorResponse(
+        items=items,
+        next_cursor=next_cursor,
+        has_more=has_more,
+        total=total,
+    )
+
+
+@router.get("/hand-clips/summary", response_model=HandClipsSummaryResponse)
+def get_hand_clips_summary(
+    db: Session = Depends(get_db),
+) -> HandClipsSummaryResponse:
+    """
+    hand_clips 동기화 요약 통계.
+
+    동기화 결과를 한눈에 확인할 수 있는 요약 정보를 제공합니다.
+    - 전체 클립 수
+    - 소스별 클립 수
+    - 최근 동기화 시간
+    - 샘플 데이터 (최근 5개)
+    """
+    from sqlalchemy import text
+
+    # Total count
+    total = db.execute(text("SELECT COUNT(*) FROM pokervod.hand_clips")).scalar() or 0
+
+    # Count by source
+    source_counts = db.execute(text("""
+        SELECT sheet_source, COUNT(*) as count
+        FROM pokervod.hand_clips
+        GROUP BY sheet_source
+        ORDER BY sheet_source
+    """)).all()
+
+    by_source = {row[0]: row[1] for row in source_counts}
+
+    # Latest sync time
+    latest_sync_result = db.execute(text("""
+        SELECT MAX(last_synced_at) FROM pokervod.google_sheet_sync
+    """)).scalar()
+    latest_sync = latest_sync_result.isoformat() if latest_sync_result else None
+
+    # Sample clips (5 most recent)
+    sample_rows = db.execute(text("""
+        SELECT id, sheet_source, sheet_row_number, title, timecode, notes, hand_grade, created_at
+        FROM pokervod.hand_clips
+        ORDER BY created_at DESC
+        LIMIT 5
+    """)).all()
+
+    sample_clips = [
+        HandClipResponse(
+            id=str(row[0]),
+            sheet_source=row[1],
+            sheet_row_number=row[2],
+            title=row[3],
+            timecode=row[4],
+            notes=row[5],
+            hand_grade=row[6],
+            created_at=row[7].isoformat() if row[7] else "",
+        )
+        for row in sample_rows
+    ]
+
+    return HandClipsSummaryResponse(
+        total_clips=total,
+        by_source=by_source,
+        latest_sync=latest_sync,
+        sample_clips=sample_clips,
     )
