@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**버전**: 1.5.0 | **Context**: Windows, PowerShell
+**버전**: 1.6.0 | **Context**: Windows, PowerShell
 
 ---
 
@@ -257,7 +257,7 @@ gh pr create --title "fix: resolve issues #1-15" --body "Closes #1, #2, ..."
 | 파일 필터 | ✅ 완료 | is_hidden, hidden_reason |
 | 동기화 검수 | ✅ 완료 | PR #24 - 폴더 트리, Sheets 뷰어 |
 | Catalog UI | ✅ 완료 | PR #27 - Netflix 스타일 카탈로그 |
-| Google Sheets | ⚠️ 미완 | 라이브러리만 설치 |
+| Google Sheets | ✅ 완료 | 2,490 hand clips 동기화됨 |
 | Block Agent | ❌ 미구현 | 50+ 파일 도달 시 재검토 |
 
 ---
@@ -284,14 +284,15 @@ main (최신)
 
 - [x] PR #24: 동기화 데이터 검수 기능 (Issue #23)
 - [x] PR #27: Catalog UI 구현 (Issue #26)
+- [x] Google Sheets 연동 - 2,490 hand clips 동기화
 - [x] Issue #25: HCL 파서 - 폴더만 있고 파일 없음 (won't fix)
 - [x] PR #19, #21: Block Agent 문서 PR 정리 (닫음)
 
 ### 다음 우선순위 작업
 
-1. **Google Sheets 동기화 완성** - 실제 연동 구현
-2. **검색 기능** - MeiliSearch 또는 PostgreSQL Full-text
-3. **비디오 썸네일** - FFmpeg 기반 자동 생성
+1. **검색 기능** - MeiliSearch 또는 PostgreSQL Full-text
+2. **비디오 썸네일** - FFmpeg 기반 자동 생성
+3. **Hand Clips UI** - 동기화된 클립 조회 인터페이스
 
 ---
 
@@ -305,7 +306,7 @@ main (최신)
 
 ---
 
-**문서 버전**: 1.5.0
+**문서 버전**: 1.6.0
 **작성일**: 2025-12-09
 **수정일**: 2025-12-10
 
@@ -313,6 +314,7 @@ main (최신)
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|----------|
+| 1.6.0 | 2025-12-10 | Google Sheets 연동 완료 (2,490 hand clips), 다음 작업 우선순위 갱신 |
 | 1.5.0 | 2025-12-10 | Frontend 개발 주의사항 섹션 추가 (API URL, 환경변수, 흔한 실수) |
 | 1.4.0 | 2025-12-10 | Catalog UI 완료 반영, PR/Issue 정리 완료, 다음 작업 업데이트 |
 | 1.3.0 | 2025-12-10 | 개발 명령어 섹션 추가, 아키텍처 다이어그램 추가, 프로젝트 코드 테이블 추가 |
