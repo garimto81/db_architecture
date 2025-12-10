@@ -4,6 +4,7 @@ Google Sheets Sync Service
 Syncs hand clip data from Google Sheets to database.
 Implements rate limiting and incremental sync based on row numbers.
 """
+import os
 import re
 import time
 from datetime import datetime
@@ -163,16 +164,16 @@ class GoogleSheetService:
         'notes': 7,
     }
 
-    # Sheet configurations
+    # Sheet configurations - 실제 시트 ID (PRD 기준)
     SHEET_CONFIGS = {
         'hand_analysis': SheetConfig(
-            sheet_id='1ABC...XYZ',  # Replace with actual sheet ID
+            sheet_id='1_RN_W_ZQclSZA0Iez6XniCXVtjkkd5HNZwiT6l-z6d4',
             sheet_name='Hand Analysis',
             source_type='hand_analysis',
             column_mapping=HAND_ANALYSIS_COLUMNS,
         ),
         'hand_database': SheetConfig(
-            sheet_id='1DEF...UVW',  # Replace with actual sheet ID
+            sheet_id='1pUMPKe-OsKc-Xd8lH1cP9ctJO4hj3keXY5RwNFp2Mtk',
             sheet_name='Hand Database',
             source_type='hand_database',
             column_mapping=HAND_DATABASE_COLUMNS,
@@ -185,10 +186,11 @@ class GoogleSheetService:
 
         Args:
             db: SQLAlchemy session
-            credentials_path: Path to Google API credentials JSON
+            credentials_path: Path to Google API credentials JSON (or use GOOGLE_SHEETS_CREDENTIALS env var)
         """
         self.db = db
-        self.credentials_path = credentials_path
+        # 환경변수에서 인증 파일 경로 가져오기 (우선순위: 파라미터 > 환경변수)
+        self.credentials_path = credentials_path or os.environ.get('GOOGLE_SHEETS_CREDENTIALS')
         self._client = None
         self._request_count = 0
         self._request_window_start = time.time()

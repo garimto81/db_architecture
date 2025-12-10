@@ -1,0 +1,5 @@
+
+# Google Sheets credentials (sensitive)
+service_account_key.json
+backend/credentials/
+backend/service_account_key.json/

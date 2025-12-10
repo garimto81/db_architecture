@@ -53,9 +53,11 @@ services:
       CORS_ORIGINS: '["http://localhost:3000", "http://localhost:8080", "http://frontend:80"]'
       APP_NAME: "GGP Poker Video Catalog API"
       APP_VERSION: "1.0.0"
+      GOOGLE_SHEETS_CREDENTIALS: /app/credentials/service_account_key.json
     volumes:
       - /z/GGPNAs/ARCHIVE:/nas/ARCHIVE:ro
       - ./logs:/app/logs
+      - ../credentials:/app/credentials:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

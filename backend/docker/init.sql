@@ -231,4 +231,47 @@ INSERT INTO seasons (project_id, year, name, location, status)
 SELECT id, 2024, 'HCL Season 2024', 'Los Angeles, CA', 'active'
 FROM projects WHERE code = 'HCL';
 
-COMMENT ON SCHEMA pokervod IS 'GGP Poker Video Catalog Database v1.0.0';
+-- ============================================
+-- Google Sheets Sync Tables
+-- ============================================
+
+-- 6. google_sheet_sync (동기화 상태 추적)
+CREATE TABLE google_sheet_sync (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    sheet_id VARCHAR(100) NOT NULL,
+    entity_type VARCHAR(50) NOT NULL,
+    last_row_synced INTEGER DEFAULT 0,
+    last_synced_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(sheet_id, entity_type)
+);
+
+COMMENT ON TABLE google_sheet_sync IS 'Google Sheet 동기화 상태 추적';
+
+-- 7. hand_clips (핸드 클립 메타데이터)
+CREATE TABLE hand_clips (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    episode_id UUID REFERENCES episodes(id) ON DELETE SET NULL,
+    video_file_id UUID REFERENCES video_files(id) ON DELETE SET NULL,
+    sheet_source VARCHAR(50),
+    sheet_row_number INTEGER,
+    title VARCHAR(500),
+    timecode VARCHAR(20),
+    timecode_end VARCHAR(20),
+    duration_seconds INTEGER,
+    notes TEXT,
+    hand_grade VARCHAR(10),
+    pot_size INTEGER,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(sheet_source, sheet_row_number)
+);
+
+CREATE INDEX idx_hand_clips_episode ON hand_clips(episode_id);
+CREATE INDEX idx_hand_clips_video ON hand_clips(video_file_id);
+CREATE INDEX idx_hand_clips_source ON hand_clips(sheet_source);
+
+COMMENT ON TABLE hand_clips IS '핸드 클립 메타데이터 (Google Sheets 연동)';
+
+COMMENT ON SCHEMA pokervod IS 'GGP Poker Video Catalog Database v1.1.0';
