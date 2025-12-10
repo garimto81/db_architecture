@@ -5,8 +5,10 @@ Syncs hand clip data from Google Sheets to database.
 Implements rate limiting and incremental sync based on row numbers.
 """
 import os
+import ntpath  # Windows 경로 처리용 (크로스 플랫폼)
 import re
 import time
+import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID, uuid4
@@ -14,6 +16,8 @@ from dataclasses import dataclass, field
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -131,6 +135,159 @@ class TagNormalizer:
         return [cls.normalize(t) for t in tags]
 
 
+class NasPathNormalizer:
+    """
+    NAS 경로 정규화 유틸리티
+
+    Issue #30: Google Sheets의 Nas Folder Link를 DB 경로 형식으로 변환
+    - UNC 경로 (\\10.10.100.122\docker\GGPNAs\...) → Z:/GGPNAs/...
+    - Docker 경로 (/nas/ARCHIVE/...) → Z:/GGPNAs/ARCHIVE/...
+    - 백슬래시 → 포워드슬래시
+    """
+
+    # 경로 변환 매핑 (순서 중요: 더 구체적인 패턴이 먼저)
+    PATH_MAPPINGS = [
+        # UNC 경로 (이중 백슬래시 포함)
+        (r'\\\\10\.10\.100\.122\\docker\\GGPNAs\\', 'Z:/GGPNAs/'),
+        (r'//10\.10\.100\.122/docker/GGPNAs/', 'Z:/GGPNAs/'),
+        # Docker 마운트 경로
+        (r'/nas/', 'Z:/GGPNAs/'),
+    ]
+
+    @classmethod
+    def normalize(cls, path: str) -> str:
+        """
+        경로를 DB 저장 형식(Z:\...)으로 정규화
+
+        Args:
+            path: 원본 경로 (UNC, Docker, Windows)
+
+        Returns:
+            정규화된 경로 (backslash, Z: 드라이브) - DB 형식과 일치
+        """
+        if not path:
+            return ""
+
+        # 먼저 포워드슬래시로 통일 (패턴 매칭용)
+        normalized = path.replace('\\', '/')
+
+        # 이중 슬래시 정리
+        while '//' in normalized and not normalized.startswith('//10'):
+            normalized = normalized.replace('//', '/')
+
+        # 매핑 적용
+        for pattern, replacement in cls.PATH_MAPPINGS:
+            normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+
+        # DB 형식에 맞게 백슬래시로 변환 (Z:/... → Z:\...)
+        normalized = normalized.replace('/', '\\')
+
+        return normalized
+
+    @classmethod
+    def to_db_path(cls, sheet_path: str) -> str:
+        """Sheet 경로 → DB 검색용 경로 (normalize의 별칭)"""
+        return cls.normalize(sheet_path)
+
+
+class VideoFileMatcher:
+    """
+    Nas Folder Link → video_files.file_path 매칭
+
+    Issue #30: Google Sheets의 NAS 경로로 video_files.id를 찾음
+    """
+
+    def __init__(self, db: Session):
+        self.db = db
+        self.normalizer = NasPathNormalizer()
+
+        # 캐시: file_path → video_file_id (메모리 효율)
+        self._path_cache: Dict[str, UUID] = {}
+
+    def find_video_file_id(self, nas_path: str) -> Optional[UUID]:
+        """
+        NAS 경로로 video_file_id 조회
+
+        전략:
+        1. 정확한 file_path 매칭 (가장 빠름)
+        2. 확장자 추가해서 매칭 (.mp4, .mov 등)
+        3. 파일명 LIKE 검색 (확장자 무시)
+        """
+        if not nas_path:
+            return None
+
+        normalized = self.normalizer.to_db_path(nas_path)
+
+        # 1. 캐시 확인
+        if normalized in self._path_cache:
+            return self._path_cache[normalized]
+
+        # 2. 정확한 매칭
+        result = self.db.execute(
+            text("""
+                SELECT id FROM pokervod.video_files
+                WHERE file_path = :path
+                LIMIT 1
+            """),
+            {'path': normalized}
+        ).first()
+
+        if result:
+            self._path_cache[normalized] = result[0]
+            return result[0]
+
+        # 3. 확장자가 없는 경우 일반적인 비디오 확장자 추가해서 시도
+        # ntpath.basename() 사용: Linux에서도 Windows 경로 처리 가능
+        filename = ntpath.basename(normalized)
+        if filename and not any(filename.lower().endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.mkv']):
+            for ext in ['.mp4', '.mov', '.avi', '.mkv']:
+                result = self.db.execute(
+                    text("""
+                        SELECT id FROM pokervod.video_files
+                        WHERE file_name = :filename
+                        LIMIT 1
+                    """),
+                    {'filename': filename + ext}
+                ).first()
+
+                if result:
+                    self._path_cache[normalized] = result[0]
+                    return result[0]
+
+        # 4. 파일명 LIKE 검색 (확장자 무시, 폴더 경로 변경 대응)
+        if filename:
+            # 확장자 제거한 이름으로 LIKE 검색
+            name_without_ext = ntpath.splitext(filename)[0]
+            if name_without_ext:
+                result = self.db.execute(
+                    text("""
+                        SELECT id FROM pokervod.video_files
+                        WHERE file_name LIKE :pattern
+                        LIMIT 1
+                    """),
+                    {'pattern': name_without_ext + '%'}
+                ).first()
+
+                if result:
+                    self._path_cache[normalized] = result[0]
+                    return result[0]
+
+        return None
+
+    def preload_cache(self):
+        """video_files 전체를 캐시에 로드 (대량 동기화 시)"""
+        results = self.db.execute(
+            text("""
+                SELECT id, file_path, file_name
+                FROM pokervod.video_files
+                WHERE deleted_at IS NULL
+            """)
+        ).fetchall()
+
+        for row in results:
+            self._path_cache[row[1]] = row[0]  # file_path → id
+
+
 class GoogleSheetService:
     """
     Google Sheets synchronization service.
@@ -218,6 +375,9 @@ class GoogleSheetService:
         self._client = None
         self._request_count = 0
         self._request_window_start = time.time()
+
+        # Issue #30: video_file_id 매칭용
+        self.video_matcher = VideoFileMatcher(db)
 
     def _get_client(self):
         """Get or create gspread client (lazy initialization)"""
@@ -427,6 +587,12 @@ class GoogleSheetService:
                 return row[idx].strip() if row[idx] else None
             return None
 
+        # Issue #30: Nas Folder Link (C열) → video_file_id 매칭
+        nas_path = get_col('nas_path')
+        video_file_id = None
+        if nas_path:
+            video_file_id = self.video_matcher.find_video_file_id(nas_path)
+
         # Issue #28: Metadata Archive 시트 구조에 맞게 매핑
         clip_data = {
             'id': uuid4(),
@@ -437,6 +603,7 @@ class GoogleSheetService:
             'timecode_end': get_col('timecode_end'),   # E열: Out (종료 타임코드)
             'hand_grade': get_col('hand_grade'),       # F열: Hand Grade
             'notes': get_col('winner'),                # G열: Winner → notes에 임시 저장
+            'video_file_id': video_file_id,            # Issue #30: 핵심 연결
         }
 
         # Parse hands involved (H열)
@@ -502,7 +669,7 @@ class GoogleSheetService:
         ).first()
 
         if existing:
-            # Update existing (Issue #28: timecode_end 추가)
+            # Update existing (Issue #30: video_file_id 추가)
             self.db.execute(
                 text("""
                     UPDATE pokervod.hand_clips
@@ -511,6 +678,7 @@ class GoogleSheetService:
                         timecode_end = :timecode_end,
                         notes = :notes,
                         hand_grade = :hand_grade,
+                        video_file_id = :video_file_id,
                         updated_at = NOW()
                     WHERE id = :id
                 """),
@@ -521,17 +689,18 @@ class GoogleSheetService:
                     'timecode_end': clip_data.get('timecode_end'),
                     'notes': clip_data.get('notes'),
                     'hand_grade': clip_data.get('hand_grade'),
+                    'video_file_id': str(clip_data.get('video_file_id')) if clip_data.get('video_file_id') else None,
                 }
             )
             return False
         else:
-            # Insert new (Issue #28: timecode_end 추가)
+            # Insert new (Issue #30: video_file_id 추가)
             self.db.execute(
                 text("""
                     INSERT INTO pokervod.hand_clips (
-                        id, sheet_source, sheet_row_number, title, timecode, timecode_end, notes, hand_grade, is_active
+                        id, sheet_source, sheet_row_number, title, timecode, timecode_end, notes, hand_grade, video_file_id
                     ) VALUES (
-                        :id, :source, :row_num, :title, :timecode, :timecode_end, :notes, :hand_grade, true
+                        :id, :source, :row_num, :title, :timecode, :timecode_end, :notes, :hand_grade, :video_file_id
                     )
                 """),
                 {
@@ -543,6 +712,7 @@ class GoogleSheetService:
                     'timecode_end': clip_data.get('timecode_end'),
                     'notes': clip_data.get('notes'),
                     'hand_grade': clip_data.get('hand_grade'),
+                    'video_file_id': str(clip_data.get('video_file_id')) if clip_data.get('video_file_id') else None,
                 }
             )
             return True

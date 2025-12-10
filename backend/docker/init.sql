@@ -180,6 +180,21 @@ CREATE TABLE video_files (
     checksum VARCHAR(64),
     file_mtime TIMESTAMP WITH TIME ZONE,
     scan_status VARCHAR(20) DEFAULT 'pending',
+
+    -- Filtering (Issue #23)
+    is_hidden BOOLEAN DEFAULT false,
+    hidden_reason VARCHAR(50),
+
+    -- Display (Issue #30: Catalog System)
+    display_title VARCHAR(500),
+
+    -- Catalog System (Issue #30)
+    content_type VARCHAR(20),
+    catalog_title VARCHAR(300),
+    episode_title VARCHAR(300),
+    ai_description TEXT,
+    is_catalog_item BOOLEAN DEFAULT false,
+
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP WITH TIME ZONE,
@@ -205,6 +220,13 @@ CREATE INDEX idx_video_files_format ON video_files(file_format);
 CREATE INDEX idx_video_files_version ON video_files(version_type);
 CREATE INDEX idx_video_files_mtime ON video_files(file_mtime);
 CREATE INDEX idx_video_files_scan_status ON video_files(scan_status);
+
+-- Issue #30: Catalog System 인덱스
+CREATE INDEX idx_video_files_is_hidden ON video_files(is_hidden);
+CREATE INDEX idx_video_files_display_title ON video_files(display_title);
+CREATE INDEX idx_video_files_content_type ON video_files(content_type);
+CREATE INDEX idx_video_files_catalog_title ON video_files(catalog_title);
+CREATE INDEX idx_video_files_is_catalog_item ON video_files(is_catalog_item);
 
 COMMENT ON TABLE video_files IS '비디오 파일 메타데이터';
 
@@ -274,4 +296,76 @@ CREATE INDEX idx_hand_clips_source ON hand_clips(sheet_source);
 
 COMMENT ON TABLE hand_clips IS '핸드 클립 메타데이터 (Google Sheets 연동)';
 
-COMMENT ON SCHEMA pokervod IS 'GGP Poker Video Catalog Database v1.1.0';
+-- ============================================
+-- NAS Inventory Tables (v1.3.0 - Issue #29)
+-- Windows 탐색기와 100% 동일한 파일/폴더 인벤토리
+-- ============================================
+
+-- 8. nas_folders (폴더 구조 - 빈 폴더 포함)
+CREATE TABLE nas_folders (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    folder_path VARCHAR(1000) NOT NULL UNIQUE,
+    folder_name VARCHAR(500) NOT NULL,
+    parent_path VARCHAR(1000),
+    depth INT DEFAULT 0,
+
+    -- 통계 (동기화 시 계산)
+    file_count INT DEFAULT 0,
+    folder_count INT DEFAULT 0,
+    total_size_bytes BIGINT DEFAULT 0,
+
+    -- 메타데이터
+    is_empty BOOLEAN DEFAULT true,
+    is_hidden_folder BOOLEAN DEFAULT false,
+
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_nas_folders_parent ON nas_folders(parent_path);
+CREATE INDEX idx_nas_folders_depth ON nas_folders(depth);
+CREATE INDEX idx_nas_folders_empty ON nas_folders(is_empty) WHERE is_empty = false;
+
+COMMENT ON TABLE nas_folders IS 'NAS 폴더 구조 (Windows 탐색기 동일)';
+COMMENT ON COLUMN nas_folders.depth IS '루트로부터의 깊이 (0 = 루트)';
+COMMENT ON COLUMN nas_folders.file_count IS '직접 포함된 파일 수';
+COMMENT ON COLUMN nas_folders.total_size_bytes IS '하위 모든 파일의 총 용량';
+
+-- 9. nas_files (전체 파일 인벤토리 - 모든 파일 유형)
+CREATE TABLE nas_files (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    file_path VARCHAR(1000) NOT NULL UNIQUE,
+    file_name VARCHAR(500) NOT NULL,
+    file_size_bytes BIGINT DEFAULT 0,
+    file_extension VARCHAR(20),
+    file_mtime TIMESTAMP WITH TIME ZONE,
+
+    -- 파일 분류
+    file_category VARCHAR(20) NOT NULL DEFAULT 'other',
+    is_hidden_file BOOLEAN DEFAULT false,
+
+    -- 비디오 파일인 경우 video_files 참조
+    video_file_id UUID REFERENCES video_files(id) ON DELETE SET NULL,
+
+    -- 폴더 참조
+    folder_id UUID REFERENCES nas_folders(id) ON DELETE SET NULL,
+
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT chk_nas_file_category CHECK (
+        file_category IN ('video', 'metadata', 'system', 'archive', 'other')
+    )
+);
+
+CREATE INDEX idx_nas_files_category ON nas_files(file_category);
+CREATE INDEX idx_nas_files_extension ON nas_files(file_extension);
+CREATE INDEX idx_nas_files_video ON nas_files(video_file_id) WHERE video_file_id IS NOT NULL;
+CREATE INDEX idx_nas_files_folder ON nas_files(folder_id);
+CREATE INDEX idx_nas_files_mtime ON nas_files(file_mtime);
+
+COMMENT ON TABLE nas_files IS 'NAS 전체 파일 인벤토리 (Windows 탐색기 동일)';
+COMMENT ON COLUMN nas_files.file_category IS 'video: 비디오, metadata: macOS 메타(._*), system: Thumbs.db, archive: zip, other: 기타';
+COMMENT ON COLUMN nas_files.video_file_id IS '비디오 파일인 경우 video_files 테이블 참조';
+
+COMMENT ON SCHEMA pokervod IS 'GGP Poker Video Catalog Database v1.3.0';
