@@ -1,6 +1,8 @@
 # GGP Poker Video Catalog - Docker Compose Configuration
 # Usage: docker-compose up -d
 
+name: pokervod
+
 # Network for container communication
 networks:
   pokervod-net:
@@ -39,6 +41,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    image: pokervod-api:latest
     container_name: pokervod-api
     networks:
       - pokervod-net
@@ -75,6 +78,7 @@ services:
     build:
       context: ../../frontend
       dockerfile: Dockerfile
+    image: pokervod-frontend:latest
     container_name: pokervod-frontend
     networks:
       - pokervod-net
