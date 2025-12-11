@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**버전**: 1.9.0 | **Context**: Windows, PowerShell
+**버전**: 1.10.0 | **Context**: Windows, PowerShell
 
 ---
 
@@ -323,7 +323,7 @@ gh pr create --title "fix: resolve issues #1-15" --body "Closes #1, #2, ..."
 | 파일 필터 | ✅ 완료 | is_hidden, hidden_reason |
 | 동기화 검수 | ✅ 완료 | PR #24 - 폴더 트리, Sheets 뷰어 |
 | Catalog UI | ✅ 완료 | PR #27 - Netflix 스타일 카탈로그 |
-| Google Sheets | ✅ 완료 | 2,490 hand clips 동기화됨 |
+| Google Sheets | ✅ 완료 | Issue #30: Nas Folder Link → video_file_id 연결 구현 |
 | Block Agent | ❌ 미구현 | 50+ 파일 도달 시 재검토 |
 
 ---
@@ -348,6 +348,11 @@ fix/issue-23-sync-inspection
 
 ### 최근 완료된 작업
 
+- [x] **Issue #30**: Google Sheets Nas Folder Link → video_file_id 연결 구현
+  - NasPathNormalizer: UNC/Docker 경로 → DB 경로 변환
+  - VideoFileMatcher: nas_path로 video_files.id 매칭
+  - 16개 테스트 작성 및 통과
+- [x] Issue #29: NAS Inventory System - Windows 탐색기 100% 일치
 - [x] PR #24: 동기화 데이터 검수 기능 (Issue #23)
 - [x] PR #27: Catalog UI 구현 (Issue #26)
 - [x] Google Sheets 연동 - 2,490 hand clips 동기화
@@ -372,15 +377,16 @@ fix/issue-23-sync-inspection
 
 ---
 
-**문서 버전**: 1.9.0
+**문서 버전**: 1.10.0
 **작성일**: 2025-12-09
 **수정일**: 2025-12-10
-**상태**: Updated v1.9.0 - Issue #28 시트 이름 변경 (Metadata Archive 활성, iconik Metadata 보류)
+**상태**: Updated v1.10.0 - Issue #30: Google Sheets Nas Folder Link → video_file_id 연결 구현
 
 ### 변경 이력
 
 | 버전 | 날짜 | 변경 내용 |
 |------|------|----------|
+| 1.10.0 | 2025-12-10 | **Issue #30**: Google Sheets Nas Folder Link → video_file_id 연결 (NasPathNormalizer, VideoFileMatcher, 16 tests) |
 | 1.9.0 | 2025-12-10 | Issue #28: 시트 이름 변경 - Hand Analysis → Metadata Archive, Hand Database → iconik Metadata (보류) |
 | 1.8.0 | 2025-12-10 | Frontend 페이지 수정 시 버전 표기 규칙 추가 (PAGE_VERSION 상수, UI 하단 표시) |
 | 1.7.0 | 2025-12-10 | 문서 수정 시 필수 표기 규칙 섹션 추가 (버전, 상태, 변경 이력 업데이트 규칙) |
