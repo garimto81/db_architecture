@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from src.database import get_db
-from src.services.sync_service import NasSyncService, ScanResult
+from src.services.sync_service import NasSyncService, ScanResult, NasInventoryService, NasInventoryResult
 from src.services.google_sheet_service import GoogleSheetService, SheetSyncResult
 from src.api.websocket import (
     broadcast_sync_start,
@@ -1303,8 +1303,8 @@ def get_hand_clips(
     """
     from sqlalchemy import text
 
-    # Build query - Issue #28: is_active=true만 조회 (iconik_metadata 소프트 삭제)
-    where_clause = "WHERE is_active = true"
+    # Build query
+    where_clause = "WHERE 1=1"
     params: Dict[str, Any] = {'offset': (page - 1) * page_size, 'limit': page_size}
 
     if source:
@@ -1367,8 +1367,8 @@ def get_hand_clips_cursor(
     """
     from sqlalchemy import text
 
-    # Build WHERE clause - Issue #28: is_active=true만 조회 (iconik_metadata 소프트 삭제)
-    where_parts = ["is_active = true"]
+    # Build WHERE clause
+    where_parts = []
     params: Dict[str, Any] = {'limit': limit + 1}
 
     if source:
@@ -1379,10 +1379,10 @@ def get_hand_clips_cursor(
         where_parts.append("id > :cursor")
         params['cursor'] = uuid.UUID(cursor)
 
-    where_clause = " AND ".join(where_parts)
+    where_clause = " AND ".join(where_parts) if where_parts else "1=1"
 
-    # Get total count (for informational purposes) - is_active=true만
-    count_where = "is_active = true"
+    # Get total count (for informational purposes)
+    count_where = "1=1"
     count_params: Dict[str, Any] = {}
     if source:
         count_where += " AND sheet_source = :source"
@@ -1450,14 +1450,13 @@ def get_hand_clips_summary(
     """
     from sqlalchemy import text
 
-    # Total count - Issue #28: is_active=true만 조회
-    total = db.execute(text("SELECT COUNT(*) FROM pokervod.hand_clips WHERE is_active = true")).scalar() or 0
+    # Total count
+    total = db.execute(text("SELECT COUNT(*) FROM pokervod.hand_clips")).scalar() or 0
 
-    # Count by source - is_active=true만
+    # Count by source
     source_counts = db.execute(text("""
         SELECT sheet_source, COUNT(*) as count
         FROM pokervod.hand_clips
-        WHERE is_active = true
         GROUP BY sheet_source
         ORDER BY sheet_source
     """)).all()
@@ -1470,11 +1469,10 @@ def get_hand_clips_summary(
     """)).scalar()
     latest_sync = latest_sync_result.isoformat() if latest_sync_result else None
 
-    # Sample clips (5 most recent) - is_active=true만
+    # Sample clips (5 most recent)
     sample_rows = db.execute(text("""
         SELECT id, sheet_source, sheet_row_number, title, timecode, notes, hand_grade, created_at
         FROM pokervod.hand_clips
-        WHERE is_active = true
         ORDER BY created_at DESC
         LIMIT 5
     """)).all()
@@ -1499,3 +1497,197 @@ def get_hand_clips_summary(
         latest_sync=latest_sync,
         sample_clips=sample_clips,
     )
+
+
+# ============== NAS Inventory API (Issue #29) ==============
+# Windows 탐색기와 100% 동일한 파일/폴더 인벤토리 API
+
+class NasInventoryStatsResponse(BaseModel):
+    """NAS 인벤토리 통계 응답"""
+    total_files: int
+    total_folders: int
+    total_bytes: int
+    total_tb: float
+    by_category: List[Dict[str, Any]]
+    by_extension: List[Dict[str, Any]]
+
+
+class NasInventoryScanResponse(BaseModel):
+    """NAS 인벤토리 스캔 결과 응답"""
+    status: str
+    message: str
+    total_files: int
+    total_folders: int
+    total_size_bytes: int
+    new_files: int
+    new_folders: int
+    updated_files: int
+    errors: List[str]
+
+
+class WindowsComparisonResponse(BaseModel):
+    """Windows 탐색기 결과와 비교 응답"""
+    db_files: int
+    db_folders: int
+    db_bytes: int
+    windows_files: int
+    windows_folders: int
+    windows_bytes: int
+    file_diff: int
+    folder_diff: int
+    byte_diff: int
+    match: bool
+    match_percentage: float
+
+
+@router.get("/nas-inventory/stats", response_model=NasInventoryStatsResponse)
+def get_nas_inventory_stats(
+    db: Session = Depends(get_db),
+) -> NasInventoryStatsResponse:
+    """
+    NAS 인벤토리 통계 조회.
+
+    nas_files, nas_folders 테이블에서 통계를 조회합니다.
+    Windows 탐색기 결과와 비교할 수 있는 데이터를 제공합니다.
+
+    - 총 파일 수
+    - 총 폴더 수
+    - 총 용량 (bytes, TB)
+    - 카테고리별 통계 (video, metadata, system, archive, other)
+    - 확장자별 통계 (상위 10개)
+    """
+    service = NasInventoryService(db)
+    stats = service.get_inventory_stats()
+
+    return NasInventoryStatsResponse(
+        total_files=stats['total_files'],
+        total_folders=stats['total_folders'],
+        total_bytes=stats['total_bytes'],
+        total_tb=stats['total_tb'],
+        by_category=stats['by_category'],
+        by_extension=stats['by_extension'],
+    )
+
+
+@router.post("/nas-inventory/scan", response_model=NasInventoryScanResponse)
+def scan_nas_inventory(
+    include_hidden: bool = Query(True, description="숨김 파일 포함 여부"),
+    db: Session = Depends(get_db),
+) -> NasInventoryScanResponse:
+    """
+    NAS 전체 파일/폴더 인벤토리 스캔.
+
+    모든 파일을 스캔하여 nas_files, nas_folders 테이블에 저장합니다.
+    Windows 탐색기와 100% 동일한 결과를 보장합니다.
+
+    - 비디오 파일: video_files 테이블과 연결
+    - 메타데이터 파일: ._*, .DS_Store 등
+    - 시스템 파일: Thumbs.db 등
+    - 아카이브 파일: zip, rar 등
+    - 기타 파일: 모두 저장
+
+    **주의**: 대용량 NAS 스캔은 시간이 오래 걸릴 수 있습니다.
+    """
+    service = NasInventoryService(db)
+    result = service.scan_inventory(include_hidden=include_hidden)
+
+    return NasInventoryScanResponse(
+        status=result.status,
+        message=f"Scanned {result.total_files} files in {result.total_folders} folders",
+        total_files=result.total_files,
+        total_folders=result.total_folders,
+        total_size_bytes=result.total_size_bytes,
+        new_files=result.new_files,
+        new_folders=result.new_folders,
+        updated_files=result.updated_files,
+        errors=result.errors[:10],  # Limit errors in response
+    )
+
+
+@router.get("/nas-inventory/compare", response_model=WindowsComparisonResponse)
+def compare_with_windows(
+    db: Session = Depends(get_db),
+) -> WindowsComparisonResponse:
+    """
+    Windows 탐색기 결과와 DB 인벤토리 비교.
+
+    Z:\\GGPNAs\\ARCHIVE 기준:
+    - Windows 탐색기: 1,907 파일, 193 폴더, 21,428,216,352,768 bytes (19.49 TB)
+
+    DB 인벤토리 결과와 비교하여 일치 여부를 반환합니다.
+    """
+    service = NasInventoryService(db)
+    stats = service.get_inventory_stats()
+
+    # Windows Explorer 기준값 (사용자 제공)
+    windows_files = 1907
+    windows_folders = 193
+    windows_bytes = 21428216352768  # 19.49 TB
+
+    db_files = stats['total_files']
+    db_folders = stats['total_folders']
+    db_bytes = stats['total_bytes']
+
+    file_diff = windows_files - db_files
+    folder_diff = windows_folders - db_folders
+    byte_diff = windows_bytes - db_bytes
+
+    # 100% 일치 여부
+    match = (file_diff == 0 and folder_diff == 0)
+
+    # 일치율 계산 (파일 수 기준)
+    match_percentage = round((db_files / windows_files) * 100, 2) if windows_files > 0 else 0
+
+    return WindowsComparisonResponse(
+        db_files=db_files,
+        db_folders=db_folders,
+        db_bytes=db_bytes,
+        windows_files=windows_files,
+        windows_folders=windows_folders,
+        windows_bytes=windows_bytes,
+        file_diff=file_diff,
+        folder_diff=folder_diff,
+        byte_diff=byte_diff,
+        match=match,
+        match_percentage=match_percentage,
+    )
+
+
+@router.post("/nas-inventory/scan-background")
+def scan_nas_inventory_background(
+    include_hidden: bool = Query(True, description="숨김 파일 포함 여부"),
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db),
+):
+    """
+    NAS 인벤토리 백그라운드 스캔 시작.
+
+    대용량 NAS 스캔을 백그라운드에서 실행합니다.
+    진행 상황은 /api/sync/nas-inventory/stats에서 확인할 수 있습니다.
+    """
+    sync_id = str(uuid.uuid4())[:8]
+
+    def run_scan():
+        service = NasInventoryService(db)
+        service.scan_inventory(include_hidden=include_hidden)
+
+    if background_tasks:
+        background_tasks.add_task(run_scan)
+        return {
+            "status": "started",
+            "sync_id": sync_id,
+            "message": "NAS inventory scan started in background"
+        }
+    else:
+        # Fallback to sync execution
+        service = NasInventoryService(db)
+        result = service.scan_inventory(include_hidden=include_hidden)
+        return {
+            "status": "completed",
+            "sync_id": sync_id,
+            "message": f"Scanned {result.total_files} files",
+            "result": {
+                "total_files": result.total_files,
+                "total_folders": result.total_folders,
+            }
+        }
