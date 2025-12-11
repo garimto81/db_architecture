@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**버전**: 1.6.0 | **Context**: Windows, PowerShell
+**버전**: 1.6.1 | **Context**: Windows, PowerShell
 
 ---
 

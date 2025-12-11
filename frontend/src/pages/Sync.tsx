@@ -9,7 +9,7 @@
 
 // 페이지 버전 정보 (UI 하단에 표시)
 const PAGE_VERSION = {
-  version: '1.6.0',
+  version: '1.6.1',
   updated: '2025-12-11',
   changes: 'Issue #30: Nas Folder Link → video_file_id 연결 완료 (97.4%)',
 };
