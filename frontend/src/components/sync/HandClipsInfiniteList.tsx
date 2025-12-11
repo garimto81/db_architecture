@@ -157,10 +157,10 @@ function DbMappingDiagram() {
               <span className="text-blue-700">File Name</span>
               <span className="ml-auto">→</span>
             </div>
-            <div className="flex items-center gap-2 text-gray-400">
-              <span className="w-6 text-center">C</span>
-              <span>Nas Folder Link</span>
-              <span className="ml-auto text-xs">(추후)</span>
+            <div className="flex items-center gap-2 bg-cyan-50 rounded px-1 py-0.5">
+              <span className="w-6 text-center text-cyan-600 font-bold">C</span>
+              <span className="text-cyan-700">Nas Folder Link</span>
+              <span className="ml-auto">→</span>
             </div>
             <div className="flex items-center gap-2 bg-green-50 rounded px-1 py-0.5">
               <span className="w-6 text-center text-green-600 font-bold">D</span>
